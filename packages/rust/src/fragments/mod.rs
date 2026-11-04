@@ -48,6 +48,13 @@ const MODEL_GUID: &str = "00000000-0000-0000-0000-000000000000";
 /// C++ recurses without a limit; a hostile buffer could exhaust the stack).
 const MAX_SPATIAL_DEPTH: usize = 256;
 
+/// Maximum total spatial structure nodes expanded on read (guards against
+/// exponential DAG offset aliasing in hostile FlatBuffers).
+const MAX_SPATIAL_NODES: usize = 100_000;
+
+/// Maximum decompressed `.frag` payload size (512 MiB).
+const MAX_FRAGMENTS_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
+
 type Mat4 = [f64; 16];
 
 /// Column-major 4x4 multiply, `a * b`.
@@ -764,6 +771,7 @@ struct FragReader<'a> {
     mesh_resources: Vec<InstancedMeshResource>,
     resource_by_signature: HashMap<String, String>,
     warned_unsupported: bool,
+    visited_nodes: usize,
 }
 
 impl<'a> FragReader<'a> {
@@ -873,6 +881,12 @@ impl<'a> FragReader<'a> {
         if depth > MAX_SPATIAL_DEPTH {
             return Err(InvalidFlatbuffer::new(format!(
                 "spatial structure nested deeper than {MAX_SPATIAL_DEPTH} levels"
+            )));
+        }
+        self.visited_nodes += 1;
+        if self.visited_nodes > MAX_SPATIAL_NODES {
+            return Err(InvalidFlatbuffer::new(format!(
+                "spatial structure exceeds maximum of {MAX_SPATIAL_NODES} nodes"
             )));
         }
         let category = spatial
@@ -1050,6 +1064,7 @@ fn read_model(raw: &[u8]) -> ReadResult<InstancedScene> {
         mesh_resources: Vec::new(),
         resource_by_signature: HashMap::new(),
         warned_unsupported: false,
+        visited_nodes: 0,
     };
 
     let scene_hierarchy = match model.spatial_structure()? {
@@ -1083,7 +1098,16 @@ fn read_model(raw: &[u8]) -> ReadResult<InstancedScene> {
 /// flat-shaded with zero UVs; samples of a non-SHELL representation (e.g.
 /// CIRCLE_EXTRUSION) are skipped with a one-time warning on stderr.
 pub fn from_fragments(data: &[u8]) -> Result<InstancedScene, FragmentsError> {
-    let inflated = crate::inflate::zlib_decompress(data).ok();
+    let inflated =
+        match crate::inflate::zlib_decompress_capped(data, MAX_FRAGMENTS_DECOMPRESSED_BYTES) {
+            Ok(buf) => Some(buf),
+            Err(crate::inflate::InflateError::OutputLimit) => {
+                return Err(FragmentsError::InvalidBuffer(InvalidFlatbuffer::new(
+                    "decompressed fragments payload exceeds safety limit",
+                )));
+            }
+            Err(_) => None,
+        };
     let raw = inflated.as_deref().unwrap_or(data);
     Ok(read_model(raw)?)
 }

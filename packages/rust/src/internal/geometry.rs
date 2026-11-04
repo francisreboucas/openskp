@@ -140,7 +140,10 @@ fn is_prop_container_tag(t: &Tag) -> bool {
 // array, AA38 a one-byte boolean - what a SketchUp 2024 file stores for
 // `set_attribute(..., true)`). An A438 with no children or an unrecognized
 // value tag is Null - a real, present key, not a missing key.
-fn decode_a438_value(p: &[u8], a: usize, z: usize) -> ParsedAttribute {
+fn decode_a438_value(p: &[u8], a: usize, z: usize, depth: usize) -> ParsedAttribute {
+    if depth > super::bytes::MAX_TLV_DEPTH {
+        return ParsedAttribute::Null;
+    }
     let spans = parse_flat_spans(p, a, z);
     let Some(&(tag, sa, sz)) = spans.first() else {
         return ParsedAttribute::Null;
@@ -172,38 +175,47 @@ fn decode_a438_value(p: &[u8], a: usize, z: usize) -> ParsedAttribute {
         let items = parse_flat_spans(p, sa, sz)
             .into_iter()
             .filter(|(t, _, _)| *t == "A438")
-            .map(|(_, ca, cz)| decode_a438_value(p, ca, cz))
+            .map(|(_, ca, cz)| decode_a438_value(p, ca, cz, depth + 1))
             .collect();
         return ParsedAttribute::Array(items);
     }
     ParsedAttribute::Null
 }
 
-fn extract_entries(p: &[u8], a: usize, z: usize, entries: &mut ParsedAttrDict) {
+fn extract_entries(p: &[u8], a: usize, z: usize, entries: &mut ParsedAttrDict, depth: usize) {
+    if depth > super::bytes::MAX_TLV_DEPTH {
+        return;
+    }
     let mut key = String::new();
     for (tag, sa, sz) in parse_flat_spans(p, a, z) {
         if tag == "B636" {
             key = text(&p[sa..sz]);
         } else if tag == "A438" && !key.is_empty() {
-            entries.insert(std::mem::take(&mut key), decode_a438_value(p, sa, sz));
+            entries.insert(
+                std::mem::take(&mut key),
+                decode_a438_value(p, sa, sz, depth + 1),
+            );
         } else if is_prop_container_tag(&tag) {
-            extract_entries(p, sa, sz, entries);
+            extract_entries(p, sa, sz, entries, depth + 1);
         }
     }
 }
 
-fn walk_dicts(p: &[u8], a: usize, z: usize, out: &mut ParsedAttrDictionaries) {
+fn walk_dicts(p: &[u8], a: usize, z: usize, out: &mut ParsedAttrDictionaries, depth: usize) {
+    if depth > super::bytes::MAX_TLV_DEPTH {
+        return;
+    }
     let here = parse_flat_spans(p, a, z);
     for (i, &(tag, sa, sz)) in here.iter().enumerate() {
         if tag == "B436" {
             let name = text(&p[sa..sz]);
             let mut entries = ParsedAttrDict::new();
             if let Some(&(_, ea, ez)) = here.get(i + 1) {
-                extract_entries(p, ea, ez, &mut entries);
+                extract_entries(p, ea, ez, &mut entries, depth + 1);
             }
             out.insert(name, entries);
         } else if is_prop_container_tag(&tag) {
-            walk_dicts(p, sa, sz, out);
+            walk_dicts(p, sa, sz, out, depth + 1);
         }
     }
 }
@@ -214,7 +226,7 @@ fn walk_dicts(p: &[u8], a: usize, z: usize, out: &mut ParsedAttrDictionaries) {
 /// A438 value pairs; B436 can occur at any depth reachable through container
 /// tags, so both walks recurse into every container-tagged node.
 pub fn extract_attribute_dictionaries(p: &[u8], out: &mut ParsedAttrDictionaries) {
-    walk_dicts(p, 0, p.len(), out);
+    walk_dicts(p, 0, p.len(), out, 0);
 }
 
 fn vec3_at(p: &[u8], o: usize) -> Result<[f64; 3]> {

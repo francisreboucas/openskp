@@ -151,9 +151,32 @@ pub(crate) fn build_error(e: Error) -> SkpParseError {
     SkpParseError::at_stage(e.message.to_string(), ParseStage::BuildScene).with_cause(e)
 }
 
+/// Maximum component nesting depth before rejecting the hierarchy.
+pub(crate) const MAX_COMPONENT_DEPTH: usize = 64;
+
+/// Maximum total expanded component instances in a scene build (guards against
+/// exponential DAG expansion / "billion laughs" component graphs).
+pub(crate) const MAX_EXPANDED_INSTANCES: u64 = 100_000;
+
 pub(crate) fn recursive_definition(id: EntityId) -> SkpParseError {
     SkpParseError::at_stage("Recursive component definition", ParseStage::BuildScene)
         .with_definition_id(id)
+}
+
+pub(crate) fn max_depth_exceeded(id: EntityId) -> SkpParseError {
+    SkpParseError::at_stage(
+        "Component nesting depth exceeds maximum allowed limit",
+        ParseStage::BuildScene,
+    )
+    .with_definition_id(id)
+}
+
+pub(crate) fn max_instances_exceeded(id: EntityId) -> SkpParseError {
+    SkpParseError::at_stage(
+        "Expanded component instance count exceeds maximum allowed limit",
+        ParseStage::BuildScene,
+    )
+    .with_definition_id(id)
 }
 
 fn position_mm(m: &[f64]) -> [f64; 3] {
@@ -291,7 +314,7 @@ impl<'a> Baker<'a> {
                 prim.uvs[i * 2 + 1] = g.uvs[i][1];
                 let mut n = g.normals[i];
                 let mut l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-                if l < 1e-6 {
+                if !l.is_finite() || l < 1e-6 {
                     n = [0.0, 0.0, 1.0];
                 } else {
                     for x in &mut n {
@@ -300,7 +323,7 @@ impl<'a> Baker<'a> {
                 }
                 let mut w = transform_normal(matrix, n);
                 l = (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt();
-                if l < 1e-6 {
+                if !l.is_finite() || l < 1e-6 {
                     w = n;
                     l = 1.0;
                 }
@@ -359,6 +382,12 @@ impl<'a> Baker<'a> {
             if let Some(r) = i.ref_idx {
                 if self.active.contains(&r) {
                     return Err(recursive_definition(r));
+                }
+                if self.active.len() >= MAX_COMPONENT_DEPTH {
+                    return Err(max_depth_exceeded(r));
+                }
+                if self.instance_counter >= MAX_EXPANDED_INSTANCES {
+                    return Err(max_instances_exceeded(r));
                 }
                 if let Some(d) = p.definitions.get(&r) {
                     self.active.insert(r);

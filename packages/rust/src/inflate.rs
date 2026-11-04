@@ -428,6 +428,12 @@ pub fn zlib_decompress(input: &[u8]) -> Result<Vec<u8>, InflateError> {
     zlib_inner(input, usize::MAX)
 }
 
+/// Decodes a complete zlib stream (RFC 1950) up to `limit` uncompressed bytes,
+/// verifying the Adler-32 trailer.
+pub fn zlib_decompress_capped(input: &[u8], limit: usize) -> Result<Vec<u8>, InflateError> {
+    zlib_inner(input, limit)
+}
+
 /// Result codes of [`uncompress`], mirroring `mz_uncompress`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UncompressError {
