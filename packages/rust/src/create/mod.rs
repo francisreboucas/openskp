@@ -592,6 +592,22 @@ fn write_face_or_triangulate(
     Ok(total)
 }
 
+fn check_finite_point(p: Point3, what: &str) -> Result<(), SkpWriteError> {
+    if !p[0].is_finite() || !p[1].is_finite() || !p[2].is_finite() {
+        return Err(SkpWriteError::new(format!(
+            "{what} coordinates must be finite (got NaN or Infinity)"
+        )));
+    }
+    Ok(())
+}
+
+fn check_finite_points(points: &[Point3], what: &str) -> Result<(), SkpWriteError> {
+    for &p in points {
+        check_finite_point(p, what)?;
+    }
+    Ok(())
+}
+
 fn add_face_to(
     writer: &mut ArchiveWriter,
     topo: &mut Topology,
@@ -599,6 +615,10 @@ fn add_face_to(
     points: &[Point3],
     options: &FaceOptions,
 ) -> Result<i32, SkpWriteError> {
+    check_finite_points(points, "face")?;
+    for hole in options.holes.iter() {
+        check_finite_points(hole, "hole")?;
+    }
     let dicts = single_dict(&options.attribute_dict_name, &options.attributes);
     let front_uv = scale_pins(
         options.front_uv.as_deref(),
@@ -637,6 +657,11 @@ fn add_circle_to(
     radius: f64,
     options: &CircleOptions,
 ) -> Result<i32, SkpWriteError> {
+    check_finite_point(center, "circle center")?;
+    check_finite_point(normal, "circle normal")?;
+    if !radius.is_finite() {
+        return Err(SkpWriteError::new("circle radius must be finite"));
+    }
     check_segments(options.num_segments)?;
     let n = normalize3(normal)?;
     let (u, w) = circle_basis(n)?;
@@ -677,6 +702,14 @@ fn add_arc_to(
     end_angle: f64,
     options: &ArcOptions,
 ) -> Result<i32, SkpWriteError> {
+    check_finite_point(center, "arc center")?;
+    check_finite_point(normal, "arc normal")?;
+    if !radius.is_finite() {
+        return Err(SkpWriteError::new("arc radius must be finite"));
+    }
+    if !start_angle.is_finite() || !end_angle.is_finite() {
+        return Err(SkpWriteError::new("arc angles must be finite"));
+    }
     check_segments(options.num_segments)?;
     if end_angle == start_angle {
         return Err(SkpWriteError::new(
@@ -717,6 +750,7 @@ fn add_polyline_to(
     points: &[Point3],
     options: &PolylineOptions,
 ) -> Result<i32, SkpWriteError> {
+    check_finite_points(points, "polyline")?;
     if points.len() < 2 {
         return Err(SkpWriteError::new("a polyline needs at least 2 points"));
     }
@@ -1320,6 +1354,11 @@ impl SkpBuilder {
         p2: Point3,
         offset: f64,
     ) -> Result<(), SkpWriteError> {
+        check_finite_point(p1, "dimension point")?;
+        check_finite_point(p2, "dimension point")?;
+        if !offset.is_finite() {
+            return Err(SkpWriteError::new("dimension offset must be finite"));
+        }
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
         writer.write_dimension(p1, p2, offset)?;
@@ -1336,6 +1375,8 @@ impl SkpBuilder {
         point: Point3,
         leader: Point3,
     ) -> Result<(), SkpWriteError> {
+        check_finite_point(point, "text point")?;
+        check_finite_point(leader, "text leader")?;
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
         writer.write_text(text, point, leader)?;
@@ -1353,6 +1394,13 @@ impl SkpBuilder {
         point2: Option<Point3>,
         direction: Option<Point3>,
     ) -> Result<(), SkpWriteError> {
+        check_finite_point(point, "construction line point")?;
+        if let Some(p2) = point2 {
+            check_finite_point(p2, "construction line point2")?;
+        }
+        if let Some(d) = direction {
+            check_finite_point(d, "construction line direction")?;
+        }
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
         writer.write_construction_line(point, point2, direction)?;
@@ -1363,6 +1411,7 @@ impl SkpBuilder {
 
     /// Add a construction (guide) point.
     pub fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError> {
+        check_finite_point(position, "construction point")?;
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
         writer.write_construction_point(position);
@@ -1378,6 +1427,8 @@ impl SkpBuilder {
         point: Point3,
         normal: Point3,
     ) -> Result<(), SkpWriteError> {
+        check_finite_point(point, "section plane point")?;
+        check_finite_point(normal, "section plane normal")?;
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
         writer.write_section_plane(point, normal)?;
@@ -1670,6 +1721,13 @@ impl ComponentDefinitionBuilder<'_> {
         point2: Option<Point3>,
         direction: Option<Point3>,
     ) -> Result<(), SkpWriteError> {
+        check_finite_point(point, "construction line point")?;
+        if let Some(p2) = point2 {
+            check_finite_point(p2, "construction line point2")?;
+        }
+        if let Some(d) = direction {
+            check_finite_point(d, "construction line direction")?;
+        }
         self.check_writable("construction lines")?;
         let (writer, def) = self.parts();
         writer.write_construction_line(point, point2, direction)?;
@@ -1680,6 +1738,7 @@ impl ComponentDefinitionBuilder<'_> {
     /// Add a construction point - like [`SkpBuilder::add_construction_point`], in
     /// definition-local inches.
     pub fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError> {
+        check_finite_point(position, "construction point")?;
         self.check_writable("construction points")?;
         let (writer, def) = self.parts();
         writer.write_construction_point(position);
