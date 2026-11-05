@@ -361,6 +361,11 @@ fn definition_order(model: &SkpModel) -> Result<Vec<EntityId>, SkpWriteError> {
                 "circular component-definition reference involving definition {def_id}"
             )));
         }
+        if in_progress.len() >= crate::scene_build::MAX_COMPONENT_DEPTH {
+            return Err(SkpWriteError::new(format!(
+                "component-definition nesting depth exceeds maximum allowed limit at definition {def_id}"
+            )));
+        }
         in_progress.insert(def_id);
         if let Some(defn) = model.definitions.get(&def_id) {
             for inst in &defn.instances {
@@ -485,18 +490,34 @@ impl ReplayTarget for ComponentDefinitionBuilder<'_> {
 /// Search for the first non-collinear triple - an affine map preserves collinearity, so a
 /// non-collinear triple in 3D is also non-collinear in (u, v).
 pub(crate) fn non_collinear_triple(points: &[Point3]) -> Option<[Point3; 3]> {
-    for i in 0..points.len() {
-        for j in i + 1..points.len() {
-            for k in j + 1..points.len() {
-                let (a, b, c) = (points[i], points[j], points[k]);
-                let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-                let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-                let cx = e1[1] * e2[2] - e1[2] * e2[1];
-                let cy = e1[2] * e2[0] - e1[0] * e2[2];
-                let cz = e1[0] * e2[1] - e1[1] * e2[0];
-                if cx * cx + cy * cy + cz * cz > 1e-9 {
-                    return Some([a, b, c]);
+    let is_non_collinear = |a: Point3, b: Point3, c: Point3| {
+        let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cx = e1[1] * e2[2] - e1[2] * e2[1];
+        let cy = e1[2] * e2[0] - e1[0] * e2[2];
+        let cz = e1[0] * e2[1] - e1[1] * e2[0];
+        cx * cx + cy * cy + cz * cz > 1e-9
+    };
+    let cap = points.len().min(64);
+    for i in 0..cap {
+        for j in i + 1..cap {
+            for k in j + 1..cap {
+                if is_non_collinear(points[i], points[j], points[k]) {
+                    return Some([points[i], points[j], points[k]]);
                 }
+            }
+        }
+    }
+    if points.len() > cap {
+        let a = points[0];
+        let b = *points[1..].iter().max_by(|p, q| {
+            let dp = (p[0] - a[0]).powi(2) + (p[1] - a[1]).powi(2) + (p[2] - a[2]).powi(2);
+            let dq = (q[0] - a[0]).powi(2) + (q[1] - a[1]).powi(2) + (q[2] - a[2]).powi(2);
+            dp.total_cmp(&dq)
+        })?;
+        for &c in &points[cap..] {
+            if is_non_collinear(a, b, c) {
+                return Some([a, b, c]);
             }
         }
     }

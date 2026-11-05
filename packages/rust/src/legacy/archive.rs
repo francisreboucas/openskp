@@ -65,6 +65,7 @@ pub(crate) struct Archive<'a> {
     annot_watermark: Option<u64>,
     burn_stack: Vec<i32>, // per-entity-list burned-item credits
     cline_tail: Option<usize>,
+    depth: usize,
 }
 
 impl<'a> Archive<'a> {
@@ -83,6 +84,7 @@ impl<'a> Archive<'a> {
             annot_watermark: None,
             burn_stack: Vec::new(),
             cline_tail: None,
+            depth: 0,
         }
     }
 
@@ -94,6 +96,12 @@ impl<'a> Archive<'a> {
     }
 
     pub fn object(&mut self, expect: Option<&str>) -> Result<LegacyObject> {
+        const MAX_OBJECT_DEPTH: usize = 256;
+        if self.depth >= MAX_OBJECT_DEPTH {
+            return Err(Error::runtime(
+                "legacy archive object nesting exceeds maximum depth",
+            ));
+        }
         let tag = self.r.u16()?;
         if tag == 0 {
             return Ok(LegacyObject::null());
@@ -533,7 +541,10 @@ impl<'a> Archive<'a> {
             schema: 0,
             v: None,
         });
-        let v = Rc::new(self.read(&n, slot)?);
+        self.depth += 1;
+        let read_res = self.read(&n, slot);
+        self.depth -= 1;
+        let v = Rc::new(read_res?);
         self.slots.entry(slot).or_default().v = Some(v.clone());
         if &*n == "CDimensionLinear" || &*n == "CText" {
             self.annot_watermark = Some(self.next);
@@ -1332,8 +1343,9 @@ pub(crate) fn walk_with_bases<'a>(
     mat_count: u32,
     bases: &[u64],
 ) -> Result<WalkResult<'a>> {
+    const MAX_BASE_CANDIDATES: usize = 1024;
     let mut best: Option<(Error, usize)> = None;
-    for &base in bases {
+    for &base in bases.iter().take(MAX_BASE_CANDIDATES) {
         let mut ar = Archive::new(data, ver);
         match walk_model_on(&mut ar, data, ver, start, mat_count, base) {
             Ok((root, layers, materials)) => {

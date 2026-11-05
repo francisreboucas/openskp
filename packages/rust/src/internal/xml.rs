@@ -73,7 +73,7 @@ pub fn find_open_tag(s: &[u8], from: usize, name: &str, require_gt: bool) -> Opt
                         end: g + 1,
                     })
                 }
-                (None, true) => continue,
+                (None, true) => return None,
                 (g, false) => {
                     let g = g.unwrap_or(s.len());
                     return Some(OpenTag {
@@ -122,9 +122,7 @@ pub fn find_element(s: &[u8], from: usize, name: &str) -> Option<Element> {
             if !boundary_after(s, e) {
                 continue;
             }
-            let Some(g) = s[e..].iter().position(|&c| c == b'>').map(|k| e + k) else {
-                continue;
-            };
+            let g = s[e..].iter().position(|&c| c == b'>').map(|k| e + k)?;
             if let Some((k, ce)) = find_close(s, g + 1, name) {
                 return Some(Element {
                     attrs: e..g,
@@ -132,6 +130,7 @@ pub fn find_element(s: &[u8], from: usize, name: &str) -> Option<Element> {
                     end: ce,
                 });
             }
+            return None;
         }
     }
     None

@@ -21,7 +21,7 @@ pub fn compute_face_normal(points: &[Vec3]) -> Option<Vec3> {
         normal[2] += (current[0] - next[0]) * (current[1] + next[1]);
     }
     let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
-    if length < 1e-12 {
+    if !length.is_finite() || length < 1e-12 {
         return None;
     }
     for value in &mut normal {
@@ -66,7 +66,7 @@ pub(crate) fn triangulate_with(
         ];
     }
     let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
-    if len < 1e-6 {
+    if !len.is_finite() || len < 1e-6 {
         n = [0.0, 0.0, 1.0];
     } else {
         for x in &mut n {

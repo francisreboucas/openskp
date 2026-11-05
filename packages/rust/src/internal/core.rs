@@ -31,6 +31,7 @@ struct Zip<'a> {
     z: ZipArchive<'a>,
     /// Entry names (C strings, as miniz reports them), directories excluded.
     names: Vec<Vec<u8>>,
+    archive_len: u64,
 }
 
 // A ZIP entry's declared uncompressed size is untrusted central-directory
@@ -44,7 +45,7 @@ const MAX_UNCOMPRESSED_ENTRY_BYTES: u64 = 16 * 1024 * 1024 * 1024; // 16 GB
 const MAX_COMPRESSION_RATIO: u64 = 1000;
 const RATIO_CHECK_THRESHOLD_BYTES: u64 = 1024 * 1024; // 1 MB
 
-fn validate_entry_size(s: &ZipFileStat) -> Result<(), SkpParseError> {
+fn validate_entry_size(s: &ZipFileStat, archive_len: u64) -> Result<(), SkpParseError> {
     let declared = s.uncomp_size;
     if declared == 0 {
         return Ok(());
@@ -68,12 +69,13 @@ fn validate_entry_size(s: &ZipFileStat) -> Result<(), SkpParseError> {
         ));
     }
     if declared >= RATIO_CHECK_THRESHOLD_BYTES {
-        let compressed = s.comp_size;
+        let compressed = s.comp_size.min(archive_len);
         if compressed == 0 || declared / compressed > MAX_COMPRESSION_RATIO {
             return Err(SkpParseError::at_stage(
                 format!(
                     "ZIP entry '{name}' declares an implausible compression ratio ({declared} bytes from \
-                     {compressed} bytes compressed) - likely a decompression bomb"
+                     {} bytes compressed) - likely a decompression bomb",
+                    s.comp_size
                 ),
                 ParseStage::ZipExtract,
             ));
@@ -95,7 +97,11 @@ impl<'a> Zip<'a> {
                 }
             }
         }
-        Ok(Zip { z, names })
+        Ok(Zip {
+            z,
+            names,
+            archive_len: d.len() as u64,
+        })
     }
 
     /// The entry's bytes, `None` when it is missing or fails to extract; an
@@ -107,7 +113,7 @@ impl<'a> Zip<'a> {
         let Ok(s) = self.z.stat(i) else {
             return Ok(None);
         };
-        validate_entry_size(&s)?;
+        validate_entry_size(&s, self.archive_len)?;
         Ok(self.z.extract(i).ok())
     }
 }

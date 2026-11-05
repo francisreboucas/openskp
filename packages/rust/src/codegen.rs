@@ -466,7 +466,7 @@ impl Gen<'_> {
         if let Some(existing) = self.def_var.get(&def_id) {
             return Some(existing.clone());
         }
-        if !visiting.insert(def_id) {
+        if visiting.len() >= crate::scene_build::MAX_COMPONENT_DEPTH || !visiting.insert(def_id) {
             return None;
         }
         let model = self.model;
