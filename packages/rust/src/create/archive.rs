@@ -330,11 +330,11 @@ pub(super) struct ArchiveWriter {
 }
 
 impl ArchiveWriter {
-    pub fn new(next_slot: i32, class_slot: HashMap<&'static str, i32>) -> Self {
+    pub fn new(next_slot: i32, class_slot: HashMap<&'static str, i32>, next_pid: u64) -> Self {
         ArchiveWriter {
             next_slot,
             class_slot,
-            next_pid: 1,
+            next_pid,
             buf: Vec::new(),
             dim_font_slot: None,
         }
@@ -837,13 +837,12 @@ impl ArchiveWriter {
         self.buf.put_f64(applied_width.unwrap_or(1.0));
         self.buf.put_f64(applied_height.unwrap_or(1.0));
         self.write_str(image.path)?;
-        // Avg color: neutral near-opaque white. Alpha 254, not 255 - the reader treats alpha=255
-        // here as a "this material is colorized" signal, which a plain texture must not trip.
+        // Image average and paint colour are separate fields. Neither alpha is a colorize flag.
         self.buf
-            .extend_from_slice(&[255, 255, 255, 254, 0, 255, 255, 255, 254]);
-        self.write_str("")?; // second name field - empty in ground truth
-        self.buf.put_u32(1);
-        self.buf.put_u32(0); // colorize-related blob, ground truth 1, 0
+            .extend_from_slice(&[255, 255, 255, 255, 0, 255, 255, 255, 255]);
+        self.write_str("")?;
+        self.buf.put_u32(1); // material type: plain texture (2 = colorized texture)
+        self.buf.put_u32(0); // colorize mode: shift (1 = tint)
                              // Opacity and the u8 that GATES it. The stored f64 is TRANSPARENCY (0 = opaque); the
                              // reader exposes `1.0 - stored` only when the flag is set, so an `opacity` is written
                              // inverted and round-trips as itself.
@@ -1173,7 +1172,8 @@ impl ArchiveWriter {
             self.preamble(None, false);
         }
         self.drawbase(spec.material, spec.layer, spec.hidden, EdgeFlags::default());
-        for v in [plane.nx, plane.ny, plane.nz, plane.d] {
+        // The fit uses n.p = d; SketchUp's CFace stores ax + by + cz + d = 0.
+        for v in [plane.nx, plane.ny, plane.nz, -plane.d] {
             self.buf.put_f64(v);
         }
         self.buf.put_u32(1 + spec.holes.len() as u32); // nloops
@@ -1230,7 +1230,7 @@ mod tests {
 
     #[test]
     fn pids_are_written_as_a_mask_of_their_nonzero_bytes() {
-        let mut w = ArchiveWriter::new(0, HashMap::new());
+        let mut w = ArchiveWriter::new(0, HashMap::new(), 1);
         w.write_pid(0);
         w.write_pid(0x0102);
         w.write_pid(0x03_0000_0000);
@@ -1239,7 +1239,7 @@ mod tests {
 
     #[test]
     fn class_refs_and_backrefs_use_the_escape_form_from_0x7fff() {
-        let mut w = ArchiveWriter::new(0x7FFE, HashMap::new());
+        let mut w = ArchiveWriter::new(0x7FFE, HashMap::new(), 1);
         assert_eq!(w.new_of_known_class("CX", 2), 0x7FFF); // the class itself takes 0x7FFE
         w.buf.clear();
         w.new_of_known_class("CX", 2);
@@ -1256,7 +1256,7 @@ mod tests {
 
     #[test]
     fn strings_are_mfc_cstrings_in_utf16() {
-        let mut w = ArchiveWriter::new(0, HashMap::new());
+        let mut w = ArchiveWriter::new(0, HashMap::new(), 1);
         w.write_str("A\u{e9}\u{1F600}").unwrap();
         assert_eq!(
             w.buf,

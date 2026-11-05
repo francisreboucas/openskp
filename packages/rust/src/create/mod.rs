@@ -54,12 +54,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use archive::{
-    detect_image_subtype, read_u16_at, shift_ref, write_u16_at, write_u32_at, ArcCurveParams,
-    ArchiveWriter, AttributeDictList, EdgeFlags, FaceSpec, IdSource, Placement, PutLe,
-    TextureSource, Topology,
+    detect_image_subtype, shift_ref, write_u32_at, ArcCurveParams, ArchiveWriter,
+    AttributeDictList, EdgeFlags, FaceSpec, IdSource, Placement, PutLe, TextureSource, Topology,
 };
 use geometry::{
-    arc_points, circle_basis, circle_points, is_coplanar, normalize3, resolve_matrix3x3,
+    arc_points, circle_basis, circle_points, is_coplanar, newell_plane, normalize3,
+    plane_from_polygon, resolve_matrix3x3,
 };
 use scaffold_blank_v17 as scaffold;
 
@@ -176,6 +176,135 @@ impl MaterialColor for Color4 {
 }
 
 const DEFAULT_ATTRIBUTE_DICT_NAME: &str = "attributes";
+
+/// Display settings supported by the legacy document scaffold, for
+/// [`SkpBuilder::set_document_options`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct DocumentOptions {
+    /// Native UnitsOptions values: inches=0, feet=1, mm=2, cm=3, metres=4, yards=5.
+    pub length_unit: i32,
+    pub length_precision: i32,
+    /// Native style item ids and scalar values (colours are packed ABGR u32 values). Only items
+    /// present in the bundled legacy style are updated; newer items are ignored.
+    pub style_items: BTreeMap<i32, f64>,
+}
+
+impl Default for DocumentOptions {
+    fn default() -> Self {
+        DocumentOptions {
+            length_unit: 0,
+            length_precision: 3,
+            style_items: BTreeMap::new(),
+        }
+    }
+}
+
+fn read_u32_le(buf: &[u8], pos: usize) -> u32 {
+    u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]])
+}
+
+/// The scalar a style item or rendering option stores as an integer: the value truncated toward
+/// zero to 64 bits, then to 32 (as the C++ writer's casts do).
+fn style_u32(v: f64) -> u32 {
+    v as i64 as u32
+}
+
+/// Patches the scaffold's style item table at `pos` (one of the two: working and saved style).
+/// Patched before archive references are widened, so every offset still refers to the scaffold.
+fn patch_style_items(tail: &mut [u8], mut pos: usize, options: &DocumentOptions) {
+    for _ in 0..56 {
+        let id = read_u32_le(tail, pos) as i32;
+        let valid = read_u32_le(tail, pos + 4) != 0;
+        pos += 8;
+        if !valid {
+            continue; // e.g. the empty watermark list has no variant payload
+        }
+        let kind = read_u32_le(tail, pos);
+        pos += 4;
+        let size = match kind {
+            1 => 1,
+            7 => 8,
+            _ => 4,
+        };
+        if let Some(&v) = options.style_items.get(&id) {
+            match kind {
+                1 => tail[pos] = u8::from(v != 0.0),
+                4 => write_u32_at(tail, pos, style_u32(v)),
+                6 => write_u32_at(tail, pos, (v as f32).to_bits()),
+                7 => tail[pos..pos + 8].copy_from_slice(&v.to_le_bytes()),
+                _ => {}
+            }
+        }
+        pos += size;
+    }
+}
+
+/// Current rendering options, also stored outside the style manager. These scaffold offsets
+/// were cross-checked (upstream) by changing one option at a time with the SketchUp 2026 C API,
+/// saving as v17, and reading the result with that API: (style item id, offset, is boolean).
+const RENDERING_OPTION_FIELDS: [(i32, usize, bool); 41] = [
+    (1000, 3173, false),
+    (1001, 3279, false),
+    (1002, 3197, false),
+    (1004, 3201, true),
+    (1005, 3202, false),
+    (1006, 3206, true),
+    (1007, 3207, false),
+    (1008, 3211, true),
+    (1009, 3212, false),
+    (1010, 3216, true),
+    (1011, 3217, false),
+    (1012, 3172, true),
+    (1014, 3181, false),
+    (1015, 3353, true),
+    (2001, 3166, false),
+    (2002, 3227, false),
+    (2003, 3231, false),
+    (2004, 3170, true),
+    (2005, 3171, true),
+    (2006, 3326, false),
+    (2007, 3196, true),
+    (4000, 3177, false),
+    (4001, 3287, false),
+    (4002, 3299, true),
+    (4003, 3295, false),
+    (4004, 3300, true),
+    (4005, 3302, false),
+    (4006, 3301, true),
+    (4007, 3291, false),
+    (5000, 3344, true),
+    (7000, 3185, false),
+    (7001, 3340, false),
+    (7002, 3189, false),
+    (7003, 3306, false),
+    (7004, 3310, false),
+    (7005, 3314, false),
+    (7008, 3283, true),
+    (7010, 3222, true),
+    (7011, 3195, true),
+    (7012, 3286, true),
+    (7014, 3318, false),
+];
+
+/// Applies `options` to the scaffold prefix: the native named UnitsOptions and the current
+/// rendering options, at fixed offsets in the immutable v17 scaffold.
+fn patch_document_prefix(prefix: &mut [u8], options: &DocumentOptions) {
+    write_u32_at(prefix, 2327, options.length_precision as u32);
+    write_u32_at(prefix, 2360, 0); // LengthFormat: decimal
+    write_u32_at(prefix, 2389, options.length_unit as u32);
+    write_u32_at(prefix, 2689, options.length_unit as u32); // AreaUnit
+    write_u32_at(prefix, 2718, options.length_unit as u32); // VolumeUnit
+    for (id, offset, boolean) in RENDERING_OPTION_FIELDS {
+        let Some(&v) = options.style_items.get(&id) else {
+            continue;
+        };
+        if boolean {
+            prefix[offset] = u8::from(v != 0.0);
+        } else {
+            write_u32_at(prefix, offset, style_u32(v));
+        }
+    }
+}
 
 /// Options for `add_construction_line` / `add_construction_point` on [`SkpBuilder`] and
 /// [`ComponentDefinitionBuilder`].
@@ -522,6 +651,8 @@ pub struct SkpBuilder {
     /// Root entities added so far (faces, placements, curves, annotations...) - to_bytes refuses
     /// an empty model.
     face_count: i32,
+    /// Display units and style values from `set_document_options`, applied in `to_bytes`.
+    document_options: Option<DocumentOptions>,
 }
 
 impl Default for SkpBuilder {
@@ -595,9 +726,27 @@ fn write_face_or_triangulate(
         holes: &[],
         ..*spec
     };
-    let mut total = 0;
+    // Collinear fan wedges have no surface to emit. Validate all remaining wedges before
+    // writing any: a later failure must not leave earlier triangles serialized without their
+    // entity counts (SketchUp rejects the whole document).
+    check_finite_points(points, "face")?;
+    let mut triangles = Vec::new();
     for pair in points[1..].windows(2) {
-        total += writer.write_face(&[points[0], pair[0], pair[1]], topo, &triangle)?;
+        let wedge = [points[0], pair[0], pair[1]];
+        if newell_plane(&wedge).is_err() {
+            continue;
+        }
+        plane_from_polygon(&wedge)?;
+        triangles.push(wedge);
+    }
+    if triangles.is_empty() {
+        return Err(SkpWriteError::new(
+            "triangulation has no non-degenerate faces",
+        ));
+    }
+    let mut total = 0;
+    for wedge in &triangles {
+        total += writer.write_face(wedge, topo, &triangle)?;
     }
     Ok(total)
 }
@@ -780,7 +929,11 @@ impl SkpBuilder {
             materials_by_name: BTreeMap::new(),
             layers_by_name: BTreeMap::new(),
             ids: IdSource::Random,
-            material_writer: ArchiveWriter::new(scaffold::BASE, HashMap::new()),
+            material_writer: ArchiveWriter::new(
+                scaffold::BASE,
+                HashMap::new(),
+                scaffold::FIRST_NEW_PID,
+            ),
             material_count: 0,
             applied_sizes: HashMap::new(),
             layer_writer: None,
@@ -796,6 +949,7 @@ impl SkpBuilder {
             root_topology: Topology::default(),
             new_entity_count: 0,
             face_count: 0,
+            document_options: None,
         }
     }
 
@@ -815,6 +969,24 @@ impl SkpBuilder {
     #[doc(hidden)]
     pub fn use_deterministic_ids(&mut self, timestamp: u32) {
         self.ids = IdSource::Deterministic { next: 0, timestamp };
+    }
+
+    /// Set decimal display units and basic working/saved style values, without scaling geometry.
+    pub fn set_document_options(&mut self, options: &DocumentOptions) -> Result<(), SkpWriteError> {
+        if !(0..=5).contains(&options.length_unit) || !(0..=6).contains(&options.length_precision) {
+            return Err(SkpWriteError::new(
+                "invalid decimal display units or precision",
+            ));
+        }
+        if options
+            .style_items
+            .values()
+            .any(|&v| !v.is_finite() || !(-2_147_483_648.0..=4_294_967_295.0).contains(&v))
+        {
+            return Err(SkpWriteError::new("style scalar is out of range"));
+        }
+        self.document_options = Some(options.clone());
+        Ok(())
     }
 
     /// The root geometry writer's next archive slot, once root geometry exists (test hook).
@@ -939,9 +1111,15 @@ impl SkpBuilder {
             + self.layer_shift()
             + self.definition_shift();
         let class_slot = self.post_definition_class_slot();
+        // Persistent ids continue from the last section written before root geometry.
+        let next_pid = self
+            .definition_writer
+            .as_ref()
+            .or(self.layer_writer.as_ref())
+            .map_or(self.material_writer.next_pid, |w| w.next_pid);
         let writer = self
             .geometry_writer
-            .insert(ArchiveWriter::new(start, class_slot));
+            .insert(ArchiveWriter::new(start, class_slot, next_pid));
         // Flush groups that closed earlier, in creation order - deferred until now so closing one
         // group doesn't lock in root slot numbering before a later add_group/
         // add_component_definition call has run.
@@ -1052,6 +1230,7 @@ impl SkpBuilder {
             self.layer_writer = Some(ArchiveWriter::new(
                 self.layer_writer_start,
                 self.material_shifted_class_slot(),
+                self.material_writer.next_pid,
             ));
         }
         let dicts: AttributeDictList = options
@@ -1085,9 +1264,14 @@ impl SkpBuilder {
         if self.definition_writer.is_none() {
             self.definition_writer_start =
                 scaffold::SCAFFOLD_NEXT_SLOT + self.material_shift() + self.layer_shift();
+            let next_pid = self
+                .layer_writer
+                .as_ref()
+                .map_or(self.material_writer.next_pid, |w| w.next_pid);
             self.definition_writer = Some(ArchiveWriter::new(
                 self.definition_writer_start,
                 self.post_layer_class_slot(),
+                next_pid,
             ));
         }
         let writer = self.definition_writer.as_mut().expect("created above");
@@ -1476,24 +1660,14 @@ impl SkpBuilder {
             geometry.next_slot - (scaffold::SCAFFOLD_NEXT_SLOT + mshift + lshift + dshift);
         let data: &[u8] = scaffold::SCAFFOLD_BLANK_V17;
 
-        // Each layer record embeds 2 pids (write_layer); each material 1.
-        let layer_pids = self
-            .layer_writer
-            .as_ref()
-            .map_or(0, |w| w.next_pid as i32 - 1);
-        let pid_delta = self.material_count + layer_pids;
-
         let mut out =
             Vec::with_capacity(data.len() + self.material_writer.buf.len() + geometry.buf.len());
         out.extend_from_slice(&data[..scaffold::MATERIAL_INSERT_POS - 4]);
-        if pid_delta != 0 {
-            let counter = read_u16_at(&out, scaffold::PID_COUNTER_POS);
-            write_u16_at(
-                &mut out,
-                scaffold::PID_COUNTER_POS,
-                (i32::from(counter) + pid_delta) as u16,
-            );
+        if let Some(options) = &self.document_options {
+            patch_document_prefix(&mut out, options);
         }
+        let pid_at = scaffold::PID_COUNTER_POS;
+        out[pid_at..pid_at + 8].copy_from_slice(&geometry.next_pid.to_le_bytes());
         let iso = scaffold::ISO_CAMERA_PREFIX_OFFSET;
         out[iso..iso + scaffold::ISO_CAMERA_PREFIX_PATCH.len()]
             .copy_from_slice(&scaffold::ISO_CAMERA_PREFIX_PATCH);
@@ -1535,6 +1709,10 @@ impl SkpBuilder {
         // to the 6-byte escape form grows it, pushing every later position forward, so all are
         // applied in ascending original offset while tracking that growth.
         let mut tail = data[scaffold::TAIL_POS..].to_vec();
+        if let Some(options) = &self.document_options {
+            patch_style_items(&mut tail, 4070 - scaffold::TAIL_POS, options);
+            patch_style_items(&mut tail, 4951 - scaffold::TAIL_POS, options);
+        }
         let total_tail_shift = mshift + lshift + dshift + geometry_shift;
         let mut actions: Vec<(usize, Option<&[u8]>)> = scaffold::TAIL_REF_POSITIONS
             .iter()
