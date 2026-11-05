@@ -58,7 +58,11 @@ fn filler_rejects_a_non_zero_byte_in_the_padding_or_the_count() {
     for at in 4..4 + 13 + 4 {
         let mut data = filler(26, NEXT_RECORD);
         data[3 + at] = 1;
-        assert_eq!(find_empty_root_after_v20_filler(&data, 0), None, "byte {at}");
+        assert_eq!(
+            find_empty_root_after_v20_filler(&data, 0),
+            None,
+            "byte {at}"
+        );
     }
 }
 

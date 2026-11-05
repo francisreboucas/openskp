@@ -37,7 +37,7 @@ use crate::observability::{emit_log, emit_progress, LogLevel, ParseOptions, Pars
 pub use self::pages::scan_pages_for_layers;
 
 use self::archive::{
-    bootstrap_two_materials, probe_layer_anchor_bases, walk_with_bases, WalkResult,
+    bootstrap_two_materials, probe_layer_anchor_bases, walk_with_bases, Archive, WalkResult,
 };
 use self::reader::{header_major, R};
 
@@ -334,7 +334,61 @@ pub struct LegacyPathResult {
     pub extra: Option<u64>,
     pub first: Vec<Option<u64>>,
     pub second: Vec<Option<u64>>,
+    /// Whether each entry of `first` / `second` was an object written in full.
+    pub first_new: Vec<bool>,
+    pub second_new: Vec<bool>,
     pub next: usize,
+}
+
+/// Whether the text whose font ends at `pos` is anchored to an entity: after
+/// the two screen-fraction f64s comes the connection block, `[u32 type][u32 4]
+/// [point3d]`, and a type other than 0 or 1 (2, 4, 5 and 7 seen; see
+/// docs/dimension-record-notes.md) anchors the label. Matches Python's
+/// `_anchored_connection`.
+pub(crate) fn anchored_text_connection(d: &[u8], pos: usize) -> bool {
+    if pos + 24 > d.len() || read_u32(d, pos + 20).ok() != Some(4) {
+        return false;
+    }
+    read_u32(d, pos + 16).is_ok_and(|t| (2..=15).contains(&t))
+}
+
+/// A legacy definition's entity list, read by [`read_legacy_entity_list`]:
+/// each item's slot and class name, and the offset just past the list.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LegacyEntityListResult {
+    pub items: Vec<(u64, String)>,
+    pub next: usize,
+}
+
+/// Reads a legacy definition's entity list of `count` items at `pos`, with an
+/// archive of SketchUp version `ver` over `slots`. Exposed, like
+/// [`scan_pages_for_layers`], so the list's bookkeeping is unit-testable: an
+/// instance a text label's connection path writes in full is one of the
+/// list's items whether or not the list names it again.
+pub fn read_legacy_entity_list(
+    data: &[u8],
+    pos: usize,
+    ver: i32,
+    count: u32,
+    table: LegacySlotTable,
+) -> Result<LegacyEntityListResult> {
+    let mut ar = Archive::new(data, ver);
+    ar.r.p = pos;
+    ar.slots = std::mem::take(table.slots);
+    ar.class_slot = std::mem::take(table.class_slot);
+    ar.next = *table.next;
+    let res = ar.entity_list(count, false);
+    *table.slots = std::mem::take(&mut ar.slots);
+    *table.class_slot = std::mem::take(&mut ar.class_slot);
+    *table.next = ar.next;
+    let items = res?
+        .into_iter()
+        .map(|o| (o.slot, o.name.to_string()))
+        .collect();
+    Ok(LegacyEntityListResult {
+        items,
+        next: ar.r.p,
+    })
 }
 
 /// Reads a dimension connection's instance paths from `pos`.
@@ -369,10 +423,10 @@ where
         if count > 1000 {
             return Err(Error::runtime("implausible dimension path length"));
         }
-        let refs = if list == 0 {
-            &mut out.first
+        let (refs, written) = if list == 0 {
+            (&mut out.first, &mut out.first_new)
         } else {
-            &mut out.second
+            (&mut out.second, &mut out.second_new)
         };
         for _ in 0..count {
             if q + 2 > data.len() {
@@ -397,6 +451,7 @@ where
             } else {
                 refs.push(read_plain_entity_ref(data, &mut q)?);
             }
+            written.push(is_new);
         }
     }
     out.next = q;

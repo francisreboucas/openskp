@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use super::reader::R;
 use super::{
-    find_v20_filler_marker, legacy_connection_paths, legacy_instance_has_guid, LegacyKind,
-    LegacyObject, LegacySlotEntry, LegacyValue, FIRST_DIB_OBJECT, FIRST_NAMED_INSTANCE, FIRST_V4,
-    MAX_V20_FILLER_PAD,
+    anchored_text_connection, find_v20_filler_marker, legacy_connection_paths,
+    legacy_instance_has_guid, LegacyKind, LegacyObject, LegacySlotEntry, LegacyValue,
+    FIRST_DIB_OBJECT, FIRST_NAMED_INSTANCE, FIRST_V4, MAX_V20_FILLER_PAD,
 };
 use crate::internal::{read_f64, read_u16, read_u32, Error, Result};
 
@@ -64,6 +64,9 @@ pub(crate) struct Archive<'a> {
     cum_delta: u64,
     annot_watermark: Option<u64>,
     burn_stack: Vec<i32>, // per-entity-list burned-item credits
+    // per-entity-list instances an annotation's path wrote in full (see
+    // connection_paths) that the list has not listed yet, in order
+    inline_stack: Vec<Vec<u64>>,
     cline_tail: Option<usize>,
     depth: usize,
 }
@@ -83,6 +86,7 @@ impl<'a> Archive<'a> {
             cum_delta: 0,
             annot_watermark: None,
             burn_stack: Vec::new(),
+            inline_stack: Vec::new(),
             cline_tail: None,
             depth: 0,
         }
@@ -254,7 +258,9 @@ impl<'a> Archive<'a> {
 
     // The instance paths that follow each connection ref (see
     // legacy_connection_paths): consumes them, reading a path entry that MFC
-    // wrote in full as a real object.
+    // wrote in full as a real object. A path runs from the outermost instance
+    // in, so its first one is an entity of the list the annotation is in; one
+    // written here in full is noted for that list (see entity_list).
     fn connection_paths(&mut self) -> Result<()> {
         let d = self.r.d;
         let pos = self.r.p;
@@ -264,7 +270,40 @@ impl<'a> Archive<'a> {
             Ok((q.slot, self.r.p))
         })?;
         self.r.p = res.next;
+        if let Some(pending) = self.inline_stack.last_mut() {
+            for (refs, written) in [(&res.first, &res.first_new), (&res.second, &res.second_new)] {
+                if let (Some(Some(slot)), Some(true)) = (refs.first(), written.first()) {
+                    pending.push(*slot);
+                }
+            }
+        }
         Ok(())
+    }
+
+    // The walker slot of the back-reference at the cursor, without moving it;
+    // None when the next tag is anything else.
+    fn peek_backref(&self) -> Option<u64> {
+        let d = self.r.d;
+        let p = self.r.p;
+        if p + 2 > d.len() {
+            return None;
+        }
+        let mut slot = u64::from(u16::from_le_bytes([d[p], d[p + 1]]));
+        if slot == 0x7fff {
+            if p + 6 > d.len() {
+                return None;
+            }
+            slot = u64::from(u32::from_le_bytes([d[p + 2], d[p + 3], d[p + 4], d[p + 5]]));
+            if slot & 0x8000_0000 != 0 {
+                return None;
+            }
+        } else if slot == 0 || slot & 0x8000 != 0 {
+            return None;
+        }
+        if !self.burns.is_empty() && slot >= self.burns[0].0 {
+            return self.translate_ref(slot);
+        }
+        Some(slot)
     }
 
     // True when the u16 at `at` starts an object read in one of the
@@ -945,6 +984,20 @@ impl<'a> Archive<'a> {
                 v.k = LegacyKind::Text;
                 self.draw(&mut v)?;
                 self.object(Some("CSkFont"))?;
+                if anchored_text_connection(self.r.d, self.r.p) {
+                    // An anchored connection block is followed, as a
+                    // dimension's is, by the anchored entity's ref and its
+                    // instance paths - and MFC writes a path instance IN FULL
+                    // there when nothing has pointed at it before (a label
+                    // anchored to a component instance serialized after it,
+                    // its class declaration included when it is the file's
+                    // first instance). Skipped as bytes, that instance never
+                    // gets its store-map slots and every later reference is
+                    // off by them; read it instead.
+                    self.r.skip(16 + 32)?;
+                    self.entity_ref()?;
+                    self.connection_paths()?;
+                }
                 let d = self.r.d;
                 let lim = d.len().min(self.r.p + 512);
                 let mut found = None;
@@ -1152,16 +1205,29 @@ impl<'a> Archive<'a> {
 
     pub fn entity_list(&mut self, n: u32, root: bool) -> Result<Vec<LegacyObject>> {
         self.burn_stack.push(0);
+        self.inline_stack.push(Vec::new());
         let res = self.entity_list_inner(n, root);
         self.burn_stack.pop();
+        self.inline_stack.pop();
         res
     }
 
     fn entity_list_inner(&mut self, n: u32, root: bool) -> Result<Vec<LegacyObject>> {
-        let mut v = Vec::new();
+        // indexed, not held by reference: nested lists grow the stack
+        let depth = self.inline_stack.len() - 1;
+        let mut v: Vec<LegacyObject> = Vec::new();
         while v.len() < n as usize {
             let save = self.r.p;
             let d = self.r.d;
+            let pending = &self.inline_stack[depth];
+            if !pending.is_empty() && v.len() + pending.len() >= n as usize {
+                // every item left is an instance an annotation already wrote
+                // in full and the list does not list again (see below)
+                match self.peek_backref() {
+                    Some(next_ref) if pending.contains(&next_ref) => {}
+                    _ => break,
+                }
+            }
             let has_burn_credit = !root && self.burn_stack.last().is_some_and(|&c| c > 0);
             if has_burn_credit
                 && save + 25 <= d.len()
@@ -1177,7 +1243,10 @@ impl<'a> Archive<'a> {
                 break;
             }
             match self.object(None) {
-                Ok(o) => v.push(o),
+                Ok(o) => {
+                    self.inline_stack[depth].retain(|&s| s != o.slot);
+                    v.push(o);
+                }
                 Err(e) => {
                     if root {
                         // over-declared root counts run into the document
@@ -1197,6 +1266,26 @@ impl<'a> Archive<'a> {
                     return Err(e);
                 }
             }
+        }
+        // An instance an annotation wrote in full is one of this list's items,
+        // and the declared count holds it - but SketchUp does not always list
+        // it again with a back-reference (labels anchored to the loudspeakers
+        // of an auditorium: of five instances written in a definition's
+        // labels, three were listed again, two not). Keep the ones never
+        // listed, as the list's own entities.
+        for &slot in &self.inline_stack[depth] {
+            if v.len() >= n as usize {
+                break;
+            }
+            let e = self
+                .slots
+                .get(&slot)
+                .ok_or_else(|| Error::runtime("legacy backref to unknown slot"))?;
+            v.push(LegacyObject {
+                slot,
+                name: e.name.clone(),
+                v: e.v.clone(),
+            });
         }
         Ok(v)
     }
