@@ -250,6 +250,10 @@ struct Gen<'a> {
     textured_mats: BTreeSet<String>,
     def_var: BTreeMap<EntityId, String>,
     faces_skipped_degenerate: usize,
+    /// The first definition found nested deeper than
+    /// [`MAX_COMPONENT_DEPTH`](crate::scene_build::MAX_COMPONENT_DEPTH). The generated `build()`
+    /// then fails with the error the writer would raise for that model.
+    too_deep: Option<EntityId>,
     face_opts_counter: usize,
     def_counter: usize,
     inst_opts_counter: usize,
@@ -462,11 +466,18 @@ impl Gen<'_> {
         &mut self,
         def_id: EntityId,
         visiting: &mut BTreeSet<EntityId>,
+        depth: usize,
     ) -> Option<String> {
         if let Some(existing) = self.def_var.get(&def_id) {
             return Some(existing.clone());
         }
-        if visiting.len() >= crate::scene_build::MAX_COMPONENT_DEPTH || !visiting.insert(def_id) {
+        // `visiting` only grows (it is the cycle guard), so it cannot measure nesting depth:
+        // `depth` counts the definitions on the current path, as `edit.rs` does.
+        if depth >= crate::scene_build::MAX_COMPONENT_DEPTH {
+            self.too_deep.get_or_insert(def_id);
+            return None;
+        }
+        if !visiting.insert(def_id) {
             return None;
         }
         let model = self.model;
@@ -477,7 +488,7 @@ impl Gen<'_> {
 
         for inst in &defn.instances {
             if let Some(child) = inst.ref_idx {
-                self.get_or_build_def(child, visiting);
+                self.get_or_build_def(child, visiting, depth + 1);
             }
         }
 
@@ -691,6 +702,7 @@ pub fn to_rust_code(model: &SkpModel) -> String {
         textured_mats: BTreeSet::new(),
         def_var: BTreeMap::new(),
         faces_skipped_degenerate: 0,
+        too_deep: None,
         face_opts_counter: 0,
         def_counter: 0,
         inst_opts_counter: 0,
@@ -707,7 +719,24 @@ pub fn to_rust_code(model: &SkpModel) -> String {
     g.emit_layers();
     for &def_id in model.definitions.keys() {
         let mut visiting = BTreeSet::new();
-        g.get_or_build_def(def_id, &mut visiting);
+        g.get_or_build_def(def_id, &mut visiting, 0);
+    }
+    if let Some(def_id) = g.too_deep {
+        // Same message as the writer's `definition_order`, which would reject this model.
+        let msg = format!(
+            "component-definition nesting depth exceeds maximum allowed limit at definition \
+             {def_id}"
+        );
+        let at = g
+            .lines
+            .iter()
+            .position(|l| l.starts_with("pub fn build()"))
+            .expect("build() header emitted above");
+        g.lines.insert(at, "#[allow(unreachable_code)]".to_owned());
+        g.lines.insert(
+            at + 2,
+            format!("    return Err(SkpWriteError::new({}));", rust_string(&msg)),
+        );
     }
     g.emit_root();
     g.push("");
