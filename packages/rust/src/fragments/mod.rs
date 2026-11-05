@@ -50,10 +50,10 @@ const MAX_SPATIAL_DEPTH: usize = 256;
 
 /// Maximum total spatial structure nodes expanded on read (guards against
 /// exponential DAG offset aliasing in hostile FlatBuffers).
-const MAX_SPATIAL_NODES: usize = 100_000;
+const MAX_SPATIAL_NODES: usize = 10_000_000;
 
-/// Maximum decompressed `.frag` payload size (512 MiB).
-const MAX_FRAGMENTS_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
+/// Maximum decompressed `.frag` payload size (2 GiB).
+const MAX_FRAGMENTS_DECOMPRESSED_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
 type Mat4 = [f64; 16];
 

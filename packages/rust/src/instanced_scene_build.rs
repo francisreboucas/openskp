@@ -407,6 +407,7 @@ pub fn build_instanced_scene_raw(
             p.definitions.len()
         ),
     );
+    crate::scene_build::validate_hierarchy(&p)?;
     let mut inst = Instancer {
         p: &p,
         o,

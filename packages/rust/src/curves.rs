@@ -178,22 +178,7 @@ fn order_curve(b: &GeometryBuilder, eids: &[EntityId]) -> Vec<LooseRun> {
         let pair = b.edges.get(&e).copied().unwrap_or_default();
         (pair.0.unwrap_or_default(), pair.1.unwrap_or_default())
     };
-    let mut iters = 0usize;
     while !remaining.is_empty() {
-        iters += 1;
-        if iters > 64 {
-            for &e in &order {
-                if remaining.remove(&e) {
-                    let (a, c) = ends(e);
-                    runs.push(LooseRun {
-                        edge_ids: vec![e],
-                        vertex_ids: vec![a, c],
-                        closed: a == c,
-                    });
-                }
-            }
-            break;
-        }
         let mut adj: OrderedMap<EntityId, Vec<(EntityId, EntityId)>> = OrderedMap::new();
         for &e in order.iter().filter(|e| remaining.contains(e)) {
             let (a, c) = ends(e);

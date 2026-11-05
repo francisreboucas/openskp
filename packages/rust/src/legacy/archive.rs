@@ -96,6 +96,12 @@ impl<'a> Archive<'a> {
     }
 
     pub fn object(&mut self, expect: Option<&str>) -> Result<LegacyObject> {
+        const MAX_OBJECT_DEPTH: usize = 256;
+        if self.depth >= MAX_OBJECT_DEPTH {
+            return Err(Error::runtime(
+                "legacy archive object nesting exceeds maximum depth",
+            ));
+        }
         let tag = self.r.u16()?;
         if tag == 0 {
             return Ok(LegacyObject::null());
@@ -529,12 +535,6 @@ impl<'a> Archive<'a> {
     }
 
     fn new_obj(&mut self, n: Rc<str>) -> Result<LegacyObject> {
-        const MAX_OBJECT_DEPTH: usize = 64;
-        if self.depth >= MAX_OBJECT_DEPTH {
-            return Err(Error::runtime(
-                "legacy archive object nesting exceeds maximum depth",
-            ));
-        }
         let slot = self.alloc(LegacySlotEntry {
             cls: false,
             name: n.clone(),
@@ -1343,7 +1343,7 @@ pub(crate) fn walk_with_bases<'a>(
     mat_count: u32,
     bases: &[u64],
 ) -> Result<WalkResult<'a>> {
-    const MAX_BASE_CANDIDATES: usize = 64;
+    const MAX_BASE_CANDIDATES: usize = 1024;
     let mut best: Option<(Error, usize)> = None;
     for &base in bases.iter().take(MAX_BASE_CANDIDATES) {
         let mut ar = Archive::new(data, ver);

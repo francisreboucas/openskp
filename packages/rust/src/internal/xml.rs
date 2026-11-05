@@ -166,7 +166,7 @@ pub fn find_screenimage(s: &[u8], from: usize) -> Option<Element> {
                             end: ce,
                         });
                     }
-                    return None;
+                    break;
                 }
                 j += 1;
             }
