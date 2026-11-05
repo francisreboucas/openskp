@@ -156,6 +156,7 @@ pub struct LegacyValue {
     pub shadows_face_sun: bool,
     pub is_group: bool,
     pub colorized: bool,
+    pub colorize_type: i32,
     pub mat: i32,
     pub back_mat: i32,
     pub layer: i32,
@@ -210,6 +211,7 @@ impl Default for LegacyValue {
             shadows_face_sun: false,
             is_group: false,
             colorized: false,
+            colorize_type: 0,
             mat: 0,
             back_mat: 0,
             layer: 0,
@@ -787,7 +789,7 @@ fn material(v: &LegacyValue, slots: &HashMap<u64, LegacySlotEntry>) -> RawMateri
         a: v.a,
         transparency: (1.0 - v.opacity).clamp(0.0, 1.0),
         colorized: v.colorized,
-        colorize_type: i32::from(v.colorized),
+        colorize_type: v.colorize_type,
         texture: None,
     };
     if v.tex_dib != 0 || v.inline_tex {

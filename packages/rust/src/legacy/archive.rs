@@ -379,19 +379,20 @@ impl<'a> Archive<'a> {
         v.tw = self.r.f64()?;
         v.th = self.r.f64()?;
         v.tex_file = self.r.utf16()?;
-        let c = self.r.raw(9)?; // RGBA + 00 + RGBA (colour stored twice)
-        v.r = i32::from(c[0]);
-        v.g = i32::from(c[1]);
-        v.b = i32::from(c[2]);
-        // c[3] is not a colour alpha byte - it feeds the colorized check
-        // below alongside blob[4]. v.a keeps its default (255).
+        let c = self.r.raw(9)?; // image average RGBA + 00 + material paint RGBA
+        v.r = i32::from(c[5]);
+        v.g = i32::from(c[6]);
+        v.b = i32::from(c[7]);
+        // c[3] is the image average alpha, not the material opacity. Textured
+        // materials/layers use the separate opacity field; v.a stays 255.
         self.r.utf16()?;
-        let blob = self.r.raw(8)?; // u32 + u32 colorized flag
+        let blob = self.r.raw(8)?; // u32 material type + u32 colorize mode
         v.opacity = self.r.f64()?;
         if self.r.u8()? == 0 {
             v.opacity = 0.0;
         }
-        v.colorized = blob[4] != 0 || c[3] == 255;
+        v.colorized = blob[0] == 2;
+        v.colorize_type = if blob[4] == 1 { 1 } else { 0 };
         Ok(())
     }
 
