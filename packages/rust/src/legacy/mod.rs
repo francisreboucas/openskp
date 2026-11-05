@@ -112,12 +112,23 @@ pub enum LegacyKind {
 /// One decoded entity of the MFC object graph (C++ `V`): material, layer,
 /// component, edge, face, ... - `k` says which, and only the fields that kind
 /// uses are filled.
+/// A legacy dimension's decoded geometry, and the raw refs of its connection
+/// points, resolved to vertex positions once the whole archive is read.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LegacyDimension {
+    pub geometry: Dimension,
+    pub connect1: Option<u64>,
+    pub connect2: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LegacyValue {
     pub k: LegacyKind,
     pub name: String,
     pub label: String,
     pub text: String,
+    /// Dimension only (boxed, so mesh vertices do not carry it).
+    pub dimension: Option<Box<LegacyDimension>>,
     pub guid: String,
     pub xyz: Vec3,
     /// Construction line only: its normalized direction, and its bounded
@@ -184,6 +195,7 @@ impl Default for LegacyValue {
             name: String::new(),
             label: String::new(),
             text: String::new(),
+            dimension: None,
             guid: String::new(),
             xyz: [0.0; 3],
             direction: [0.0; 3],
@@ -757,11 +769,26 @@ fn fill(b: &mut GeometryBuilder, ents: &[LegacyObject], slots: &HashMap<u64, Leg
                 });
             }
             LegacyKind::Dimension => {
-                b.dimensions.push(Dimension {
-                    text: v.text.clone(),
-                    hidden: v.hidden != 0,
-                    ..Default::default()
-                });
+                let decoded = v.dimension.as_deref().cloned().unwrap_or_default();
+                let mut dim = decoded.geometry;
+                // A connection point stored as a vertex ref (possibly forward)
+                // resolves now that the whole archive is read.
+                let resolve = |point: &mut Option<Vec3>, r: Option<u64>| {
+                    if point.is_some() {
+                        return;
+                    }
+                    if let Some(LegacySlotEntry { v: Some(pv), .. }) = r.and_then(|r| slots.get(&r))
+                    {
+                        if pv.k == LegacyKind::Vertex {
+                            *point = Some(pv.xyz);
+                        }
+                    }
+                };
+                resolve(&mut dim.a, decoded.connect1);
+                resolve(&mut dim.b, decoded.connect2);
+                dim.text = v.text.clone();
+                dim.hidden = v.hidden != 0;
+                b.dimensions.push(dim);
             }
             LegacyKind::ConstructionLine => {
                 b.construction_lines.push(ConstructionLine {

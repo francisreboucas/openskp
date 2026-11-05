@@ -588,19 +588,53 @@ pub struct TextEntity {
     pub label_point: Option<Vec3>,
 }
 
-/// A linear dimension. Legacy files recover only `text`/`hidden`; VFF files
-/// the full world-space geometry (see [`SkpModel::dimensions`]).
+/// A linear dimension (SketchUp's Dimension tool).
+///
+/// The legacy reader recovers free endpoints and vertex attachments in the
+/// owning entities; unresolved attachments remain unset. See
+/// [`SkpModel::dimensions`] for the VFF model-level, world-space list.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Dimension {
     /// Displayed text; empty when it shows the auto-computed value.
     pub text: String,
     pub hidden: bool,
+    /// First measured point in inches in the owning entities' space
+    /// (definition-local, or world at the model root), or unset when
+    /// unresolved.
     pub a: Option<Vec3>,
+    /// Second measured point.
     pub b: Option<Vec3>,
     /// Offset distance (inches) of the dimension line from the a-b segment.
     pub offset: f64,
+    /// Historical frame field: VFF `5BCF` (plane normal), legacy X axis, or
+    /// unset.
     pub plane_x: Option<Vec3>,
+    /// Historical frame field: VFF `5BD0` (X axis), legacy plane normal, or
+    /// unset.
     pub normal: Option<Vec3>,
+    /// Explicit offset for legacy or VFF dimensions constrained to a plane
+    /// axis. Preserves the side of the line independently of endpoint order.
+    pub offset_vector: Option<Vec3>,
+}
+
+/// The offset vector of a dimension constrained to a plane axis (`axis` 1 or
+/// 2), from its plane `normal`, X axis `x` and signed `offset`; `None` for
+/// any other mode, which keeps only the scalar offset.
+pub(crate) fn constrained_offset_vector(
+    axis: u32,
+    normal: Vec3,
+    x: Vec3,
+    offset: f64,
+) -> Option<Vec3> {
+    match axis {
+        1 => Some([
+            (normal[1] * x[2] - normal[2] * x[1]) * offset,
+            (normal[2] * x[0] - normal[0] * x[2]) * offset,
+            (normal[0] * x[1] - normal[1] * x[0]) * offset,
+        ]),
+        2 => Some([-x[0] * offset, -x[1] * offset, -x[2] * offset]),
+        _ => None,
+    }
 }
 
 /// A construction/guide line: point + normalized direction; `start`/`end` are

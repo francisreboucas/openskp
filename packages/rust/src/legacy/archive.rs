@@ -8,10 +8,11 @@ use std::rc::Rc;
 use super::reader::R;
 use super::{
     anchored_text_connection, find_v20_filler_marker, legacy_connection_paths,
-    legacy_instance_has_guid, LegacyKind, LegacyObject, LegacySlotEntry, LegacyValue,
-    FIRST_DIB_OBJECT, FIRST_NAMED_INSTANCE, FIRST_V4, MAX_V20_FILLER_PAD,
+    legacy_instance_has_guid, LegacyDimension, LegacyKind, LegacyObject, LegacySlotEntry,
+    LegacyValue, FIRST_DIB_OBJECT, FIRST_NAMED_INSTANCE, FIRST_V4, MAX_V20_FILLER_PAD,
 };
 use crate::internal::{read_f64, read_u16, read_u32, Error, Result};
+use crate::model::constrained_offset_vector;
 
 /// A decoded value (always present for an object read in full).
 pub(crate) type Value = Rc<LegacyValue>;
@@ -238,30 +239,38 @@ impl<'a> Archive<'a> {
     // walk has not reached yet - SketchUp serializes a label/dimension BEFORE
     // the entity it anchors to when both live in the same entity list, so the
     // reference can legitimately point forward.
-    fn entity_ref(&mut self) -> Result<Option<u64>> {
+    //
+    // With `allow_inline`, an object MFC wrote in full here (the first
+    // reference to it) is read and registered, and its slot returned; without
+    // it, that is an error.
+    fn entity_ref(&mut self, allow_inline: bool) -> Result<Option<u64>> {
+        let start = self.r.p;
         let tag = self.r.u16()?;
         if tag == 0 {
             return Ok(None);
         }
         if tag == 0x7fff {
             let big = self.r.u32()?;
-            if big & 0x8000_0000 != 0 {
-                return Err(Error::runtime("entity ref is a new object"));
+            if big & 0x8000_0000 == 0 {
+                return Ok(Some(u64::from(big)));
             }
-            return Ok(Some(u64::from(big)));
+        } else if tag != 0xffff && tag & 0x8000 == 0 {
+            return Ok(Some(u64::from(tag)));
         }
-        if tag == 0xffff || tag & 0x8000 != 0 {
+        if !allow_inline {
             return Err(Error::runtime("entity ref is a new object"));
         }
-        Ok(Some(u64::from(tag)))
+        self.r.p = start;
+        Ok(Some(self.object(None)?.slot))
     }
 
     // The instance paths that follow each connection ref (see
     // legacy_connection_paths): consumes them, reading a path entry that MFC
     // wrote in full as a real object. A path runs from the outermost instance
     // in, so its first one is an entity of the list the annotation is in; one
-    // written here in full is noted for that list (see entity_list).
-    fn connection_paths(&mut self) -> Result<()> {
+    // written here in full is noted for that list (see entity_list). Returns
+    // false when the connection carries any instance path.
+    fn connection_paths(&mut self) -> Result<bool> {
         let d = self.r.d;
         let pos = self.r.p;
         let res = legacy_connection_paths(d, pos, |at| {
@@ -277,7 +286,7 @@ impl<'a> Archive<'a> {
                 }
             }
         }
-        Ok(())
+        Ok(res.extra.is_none() && res.first.is_empty() && res.second.is_empty())
     }
 
     // The walker slot of the back-reference at the cursor, without moving it;
@@ -866,8 +875,8 @@ impl<'a> Archive<'a> {
                 // (entity_ref() tolerates that).
                 self.preamble()?;
                 v.k = LegacyKind::Relationship;
-                self.entity_ref()?;
-                self.entity_ref()?;
+                self.entity_ref(false)?;
+                self.entity_ref(false)?;
             }
             "CConstructionLine" => {
                 self.preamble()?;
@@ -972,13 +981,52 @@ impl<'a> Archive<'a> {
                 // skip walks off the rails on large models. SketchUp 4 and 5
                 // write neither the font above nor the 5 bytes in front of the
                 // first connection block, nor the trailing u32 of the last.
-                self.r.skip(if self.ver >= 6 { 37 } else { 32 })?;
-                self.entity_ref()?; // connection point 1 (may be null)
-                self.connection_paths()?;
-                self.r.skip(32)?;
-                self.entity_ref()?; // connection point 2 (may be null)
-                self.connection_paths()?;
-                self.r.skip(if self.ver >= 6 { 72 } else { 68 })?;
+                let mut decoded = LegacyDimension::default();
+                if self.ver >= 6 {
+                    self.r.skip(5)?;
+                }
+                for second in [false, true] {
+                    // [u32 type][u32 4][point3d]: type 1 stores the point
+                    // inline.
+                    let block = self.r.raw(32)?;
+                    let mut point = (read_u32(block, 0)? == 1).then_some([
+                        read_f64(block, 8)?,
+                        read_f64(block, 16)?,
+                        read_f64(block, 24)?,
+                    ]);
+                    // The first reference to an anchored vertex can serialize
+                    // it in full. Keep forward references unresolved until the
+                    // complete archive is read (see fill).
+                    let mut r = self.entity_ref(true)?;
+                    if !self.connection_paths()? {
+                        // Do not expose definition-local vertex coordinates as
+                        // owner/world points until the nested instance path
+                        // can also be resolved.
+                        point = None;
+                        r = None;
+                    }
+                    if second {
+                        decoded.geometry.b = point;
+                        decoded.connect2 = r;
+                    } else {
+                        decoded.geometry.a = point;
+                        decoded.connect1 = r;
+                    }
+                }
+                let placement = self.r.raw(if self.ver >= 6 { 72 } else { 68 })?;
+                let f = |at| read_f64(placement, at);
+                let normal = [f(0)?, f(8)?, f(16)?];
+                let x = [f(24)?, f(32)?, f(40)?];
+                let axis = read_u32(placement, 48)?;
+                let g = &mut decoded.geometry;
+                g.normal = Some(normal);
+                g.plane_x = Some(x);
+                g.offset = f(52)?;
+                // X/Y-constrained dimensions use their plane frame,
+                // independent of the order of the measured endpoints.
+                // Preserve other modes without guessing.
+                g.offset_vector = constrained_offset_vector(axis, normal, x, g.offset);
+                v.dimension = Some(Box::new(decoded));
             }
             "CText" => {
                 self.preamble()?;
@@ -996,7 +1044,7 @@ impl<'a> Archive<'a> {
                     // gets its store-map slots and every later reference is
                     // off by them; read it instead.
                     self.r.skip(16 + 32)?;
-                    self.entity_ref()?;
+                    self.entity_ref(false)?;
                     self.connection_paths()?;
                 }
                 let d = self.r.d;
