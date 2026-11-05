@@ -466,6 +466,27 @@ pub fn find_count_after_v20_filler(d: &[u8], count_pos: usize, limit: u32) -> Op
     None
 }
 
+/// The SketchUp 2020 layout of a model with NO component definitions AND no
+/// root entities. [`find_count_after_v20_filler`] cannot see it: behind the
+/// filler (an empty string record, then 13 bytes of padding) the only count is
+/// the ROOT entity count, and it is 0, which that search skips as "no count".
+///
+/// Returns the offset of that root count (so the caller can put the cursor
+/// there and read the zero), or `None` when the bytes are not that layout: the
+/// empty string record has to sit within 12 bytes of `count_pos`, and the 13
+/// padding bytes and the count behind it have to be all zero.
+pub fn find_empty_root_after_v20_filler(d: &[u8], count_pos: usize) -> Option<usize> {
+    let marker_at = find_v20_filler_marker(d, count_pos)?;
+    let root_count_at = marker_at + 4 + 13;
+    if root_count_at + 4 > d.len() {
+        return None;
+    }
+    d[marker_at + 3..root_count_at + 4]
+        .iter()
+        .all(|&b| b == 0)
+        .then_some(root_count_at)
+}
+
 /// The empty-string filler marker in the 12 bytes from `count_pos`, or `None`
 /// (also when the string there is not empty: that is real data).
 pub(crate) fn find_v20_filler_marker(d: &[u8], count_pos: usize) -> Option<usize> {

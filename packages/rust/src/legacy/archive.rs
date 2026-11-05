@@ -1467,6 +1467,13 @@ fn walk_model_on(
                 dc = 0;
                 ar.r.p -= 4;
             }
+        } else if let Some(root_count_at) =
+            super::find_empty_root_after_v20_filler(data, ar.r.p - 4)
+        {
+            // No count behind the filler at all: an entirely empty model,
+            // whose root count is 0 (the retry only accepts counts > 0).
+            dc = 0;
+            ar.r.p = root_count_at;
         }
     }
     if dc > 1_000_000 {

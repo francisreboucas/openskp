@@ -43,7 +43,7 @@ pub use self::transforms::{
 };
 pub use self::vff::{extract_version, is_legacy, read_meta_units, valid_header};
 pub use crate::legacy::{
-    find_count_after_v20_filler, legacy_connection_paths, legacy_instance_has_guid, parse_legacy,
+    find_count_after_v20_filler, find_empty_root_after_v20_filler, legacy_connection_paths, legacy_instance_has_guid, parse_legacy,
     read_legacy_attribute_value, scan_pages_for_layers, LegacyKind, LegacyObject, LegacyPathResult,
     LegacySlotEntry, LegacySlotTable, LegacyValue, V20FillerHit,
 };
