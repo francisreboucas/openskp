@@ -654,6 +654,16 @@ fn extract_legacy_attribute_dictionaries(
     out
 }
 
+/// A guide's layer slot as text, resolved to the name later like a face's;
+/// `""` for the default layer (slot 0).
+fn guide_layer(layer: i32) -> String {
+    if layer == 0 {
+        String::new()
+    } else {
+        layer.to_string()
+    }
+}
+
 fn fill(b: &mut GeometryBuilder, ents: &[LegacyObject], slots: &HashMap<u64, LegacySlotEntry>) {
     for x in ents {
         let s = x.slot;
@@ -796,11 +806,16 @@ fn fill(b: &mut GeometryBuilder, ents: &[LegacyObject], slots: &HashMap<u64, Leg
                     direction: v.direction,
                     start: v.start,
                     end: v.end,
+                    layer: guide_layer(v.layer),
+                    hidden: v.hidden != 0,
                 });
             }
             LegacyKind::ConstructionPoint => {
-                b.construction_points
-                    .push(ConstructionPoint { position: v.xyz });
+                b.construction_points.push(ConstructionPoint {
+                    position: v.xyz,
+                    layer: guide_layer(v.layer),
+                    hidden: v.hidden != 0,
+                });
             }
             _ => {}
         }

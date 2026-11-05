@@ -69,8 +69,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::create::{
     create, AttributeDict, AttributeValue, ComponentDefinitionBuilder, DefinitionHandle,
-    DefinitionOptions, FaceOptions, InstanceOptions, LayerOptions, Matrix3x3, Point3, SkpBuilder,
-    SkpWriteError, UvCorrespondence,
+    DefinitionOptions, FaceOptions, GuideOptions, InstanceOptions, LayerOptions, Matrix3x3, Point3,
+    SkpBuilder, SkpWriteError, UvCorrespondence,
 };
 use crate::errors::SkpParseError;
 use crate::internal::is_legacy;
@@ -427,12 +427,17 @@ trait ReplayTarget {
         definition: DefinitionHandle,
         options: &InstanceOptions,
     ) -> Result<(), SkpWriteError>;
-    fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError>;
+    fn add_construction_point(
+        &mut self,
+        position: Point3,
+        options: &GuideOptions,
+    ) -> Result<(), SkpWriteError>;
     fn add_construction_line(
         &mut self,
         point: Point3,
         point2: Option<Point3>,
         direction: Option<Point3>,
+        options: &GuideOptions,
     ) -> Result<(), SkpWriteError>;
 }
 
@@ -447,16 +452,21 @@ impl ReplayTarget for SkpBuilder {
     ) -> Result<(), SkpWriteError> {
         SkpBuilder::add_instance(self, definition, options)
     }
-    fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError> {
-        SkpBuilder::add_construction_point(self, position)
+    fn add_construction_point(
+        &mut self,
+        position: Point3,
+        options: &GuideOptions,
+    ) -> Result<(), SkpWriteError> {
+        SkpBuilder::add_construction_point(self, position, options)
     }
     fn add_construction_line(
         &mut self,
         point: Point3,
         point2: Option<Point3>,
         direction: Option<Point3>,
+        options: &GuideOptions,
     ) -> Result<(), SkpWriteError> {
-        SkpBuilder::add_construction_line(self, point, point2, direction)
+        SkpBuilder::add_construction_line(self, point, point2, direction, options)
     }
 }
 
@@ -471,16 +481,21 @@ impl ReplayTarget for ComponentDefinitionBuilder<'_> {
     ) -> Result<(), SkpWriteError> {
         ComponentDefinitionBuilder::add_instance(self, definition, options)
     }
-    fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError> {
-        ComponentDefinitionBuilder::add_construction_point(self, position)
+    fn add_construction_point(
+        &mut self,
+        position: Point3,
+        options: &GuideOptions,
+    ) -> Result<(), SkpWriteError> {
+        ComponentDefinitionBuilder::add_construction_point(self, position, options)
     }
     fn add_construction_line(
         &mut self,
         point: Point3,
         point2: Option<Point3>,
         direction: Option<Point3>,
+        options: &GuideOptions,
     ) -> Result<(), SkpWriteError> {
-        ComponentDefinitionBuilder::add_construction_line(self, point, point2, direction)
+        ComponentDefinitionBuilder::add_construction_line(self, point, point2, direction, options)
     }
 }
 
@@ -767,15 +782,27 @@ impl ReplayContext<'_> {
         for inst in &defn.instances {
             self.replay_instance(target, inst, warnings, context);
         }
+        let guide_options = |layer: &str, hidden: bool| GuideOptions {
+            layer: (!layer.is_empty())
+                .then(|| self.layer_slots.get(layer).copied())
+                .flatten(),
+            hidden,
+        };
         for cp in &defn.construction_points {
-            if let Err(exc) = target.add_construction_point(cp.position) {
+            let options = guide_options(&cp.layer, cp.hidden);
+            if let Err(exc) = target.add_construction_point(cp.position, &options) {
                 warnings.push(format!("{context}: construction point skipped ({exc})"));
             }
         }
         for cl in &defn.construction_lines {
+            let options = guide_options(&cl.layer, cl.hidden);
             let result = match (cl.start, cl.end) {
-                (Some(start), Some(end)) => target.add_construction_line(start, Some(end), None),
-                (None, None) => target.add_construction_line(cl.point, None, Some(cl.direction)),
+                (Some(start), Some(end)) => {
+                    target.add_construction_line(start, Some(end), None, &options)
+                }
+                (None, None) => {
+                    target.add_construction_line(cl.point, None, Some(cl.direction), &options)
+                }
                 _ => {
                     warnings.push(format!("{context}: half-bounded construction line skipped"));
                     continue;

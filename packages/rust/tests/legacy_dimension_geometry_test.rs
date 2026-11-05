@@ -5,13 +5,13 @@
 // stored inline, null object refs), then get patched the way a real file can differ: a connection
 // point that is a vertex written in full the first time it is referenced (a dimension comes before
 // the geometry it is attached to), a back-reference to one, a forward reference, or an instance
-// path. The two cases of the C++ test that need `add_dimension` with an offset VECTOR are writer
-// features, ported with the writer.
+// path. The last two cases write dimensions placed by an offset vector
+// (`add_dimension_with_offset_vector`), at the root and inside a component definition.
 
 mod common;
 
 use common::{concat, f64s};
-use openskp::create::{create, Point3};
+use openskp::create::{create, DefinitionOptions, GuideOptions, InstanceOptions, Point3};
 use openskp::internal::read_u16;
 use openskp::{ParseOptions, SkpFile, SkpModel, Vec3};
 
@@ -53,7 +53,7 @@ fn fixture() -> Vec<u8> {
     builder.add_dimension(C, D, 3.0).unwrap();
     // A successful parse must retain entities after the annotations, too.
     builder
-        .add_construction_point([101.0, 102.0, 103.0])
+        .add_construction_point([101.0, 102.0, 103.0], &GuideOptions::default())
         .unwrap();
     builder.to_bytes().unwrap()
 }
@@ -198,4 +198,134 @@ fn nested_paths_are_consumed_without_publishing_local_coordinates() {
     expect_point(dims[0].b, B);
     expect_point(dims[1].a, C);
     expect_tail(&model);
+}
+
+#[test]
+fn vector_offsets_survive_root_and_nested_round_trips() {
+    // (a, b, offset vector, expected offset vector: its part perpendicular to a->b)
+    let samples: [(Point3, Point3, Point3, Point3); 9] = [
+        (
+            [1.0, 2.0, 3.0],
+            [11.0, 2.0, 3.0],
+            [0.0, 0.0, 4.0],
+            [0.0, 0.0, 4.0],
+        ),
+        (
+            [11.0, 2.0, 3.0],
+            [1.0, 2.0, 3.0],
+            [0.0, 0.0, -4.0],
+            [0.0, 0.0, -4.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [1.0, 2.0, 13.0],
+            [-4.0, 0.0, 0.0],
+            [-4.0, 0.0, 0.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [4.0, 6.0, 8.0],
+            [-4.0, 3.0, 0.0],
+            [-4.0, 3.0, 0.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [11.0, 2.0, 3.0],
+            [7.0, -4.0, 0.0],
+            [0.0, -4.0, 0.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [1.0, 2.0, 13.0],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [11.0, 2.0, 3.0],
+            [7.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [4.0, 6.0, 8.0],
+            [3.0, 4.0, 5.0],
+            [0.0, 0.0, 0.0],
+        ),
+        (
+            [1.0, 2.0, 3.0],
+            [11.0, 2.0, 3.0],
+            [0.0, 0.0, 1e-12],
+            [0.0, 0.0, 1e-12],
+        ),
+    ];
+    let mut builder = create();
+    let mut definition = builder
+        .add_component_definition("Dimensions", &DefinitionOptions::default())
+        .unwrap();
+    for (a, b, offset, _) in samples {
+        definition
+            .add_dimension_with_offset_vector(a, b, offset)
+            .unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    for (a, b, offset, _) in samples {
+        builder
+            .add_dimension_with_offset_vector(a, b, offset)
+            .unwrap();
+    }
+    let model = parse(builder.to_bytes().unwrap());
+    assert_eq!(model.root().dimensions.len(), samples.len());
+    assert_eq!(model.definitions.len(), 1);
+    let nested = &model.definitions.values().next().unwrap().dimensions;
+    assert_eq!(nested.len(), samples.len());
+    for dims in [&model.root().dimensions, nested] {
+        for (dim, &(a, b, _, expected)) in dims.iter().zip(&samples) {
+            expect_point(dim.a, a);
+            expect_point(dim.b, b);
+            expect_point(dim.offset_vector, expected);
+        }
+    }
+}
+
+#[test]
+fn invalid_vector_dimension_does_not_corrupt_following_records() {
+    let (a, b) = (A, B);
+    let mut builder = create();
+    let mut definition = builder
+        .add_component_definition("Dimensions", &DefinitionOptions::default())
+        .unwrap();
+    for bad in [f64::INFINITY, f64::NAN] {
+        assert!(definition
+            .add_dimension_with_offset_vector(a, b, [bad, 0.0, 0.0])
+            .is_err());
+    }
+    assert!(definition
+        .add_dimension_with_offset_vector(a, a, [0.0, 0.0, 1.0])
+        .is_err());
+    definition
+        .add_dimension_with_offset_vector(a, b, [0.0, 0.0, 2.0])
+        .unwrap();
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    for bad in [f64::INFINITY, f64::NAN] {
+        assert!(builder
+            .add_dimension_with_offset_vector([bad, 0.0, 0.0], b, [0.0, 0.0, 1.0])
+            .is_err());
+    }
+    builder
+        .add_dimension_with_offset_vector(a, b, [0.0, 0.0, 3.0])
+        .unwrap();
+    let model = parse(builder.to_bytes().unwrap());
+    assert_eq!(model.root().dimensions.len(), 1);
+    assert_eq!(model.definitions.len(), 1);
+    let nested = &model.definitions.values().next().unwrap().dimensions;
+    assert_eq!(nested.len(), 1);
+    expect_point(model.root().dimensions[0].offset_vector, [0.0, 0.0, 3.0]);
+    expect_point(nested[0].offset_vector, [0.0, 0.0, 2.0]);
 }

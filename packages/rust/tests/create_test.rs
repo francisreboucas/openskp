@@ -7,7 +7,8 @@ use std::f64::consts::PI;
 
 use openskp::create::{
     create, ArcOptions, AttributeValue, CircleOptions, DefinitionOptions, FaceOptions,
-    GroupOptions, ImageOptions, InstanceOptions, LayerOptions, Point3, PolylineOptions, SkpBuilder,
+    GroupOptions, GuideOptions, ImageOptions, InstanceOptions, LayerOptions, Point3,
+    PolylineOptions, SkpBuilder,
 };
 
 const PNG: &str = "tests/fixtures/create_reference/fake.png";
@@ -248,9 +249,16 @@ fn add_section_plane_rejects_a_zero_normal() {
 fn add_construction_line_requires_exactly_one_of_point2_or_direction() {
     let mut b = create();
     b.add_face(&square(), &FaceOptions::default()).unwrap();
-    assert!(b.add_construction_line([0.0; 3], None, None).is_err());
     assert!(b
-        .add_construction_line([0.0; 3], Some([1.0, 0.0, 0.0]), Some([0.0, 1.0, 0.0]))
+        .add_construction_line([0.0; 3], None, None, &GuideOptions::default())
+        .is_err());
+    assert!(b
+        .add_construction_line(
+            [0.0; 3],
+            Some([1.0, 0.0, 0.0]),
+            Some([0.0, 1.0, 0.0]),
+            &GuideOptions::default()
+        )
         .is_err());
 }
 
@@ -370,7 +378,9 @@ fn definition_lifecycle_errors() {
         empty.add_face(&square(), &FaceOptions::default()).is_err(),
         "add after close"
     );
-    assert!(empty.add_construction_point([0.0; 3]).is_err());
+    assert!(empty
+        .add_construction_point([0.0; 3], &GuideOptions::default())
+        .is_err());
     assert_eq!(empty.name(), "Empty");
 }
 

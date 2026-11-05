@@ -13,7 +13,8 @@ use std::path::PathBuf;
 
 use common::fixture;
 use openskp::create::{
-    create, Color3, DefinitionOptions, FaceOptions, InstanceOptions, LayerOptions, Point3,
+    create, Color3, DefinitionOptions, FaceOptions, GuideOptions, InstanceOptions, LayerOptions,
+    Point3,
 };
 use openskp::{open_existing, OpenExistingError, ParseOptions, SkpFile, SkpModel};
 
@@ -340,9 +341,16 @@ fn replays_nested_definition_construction() {
         nested
             .add_face(&square(10.0), &FaceOptions::default())
             .unwrap();
-        nested.add_construction_point([4.0, 5.0, 6.0]).unwrap();
         nested
-            .add_construction_line([1.0, 1.0, 1.0], Some([2.0, 2.0, 2.0]), None)
+            .add_construction_point([4.0, 5.0, 6.0], &GuideOptions::default())
+            .unwrap();
+        nested
+            .add_construction_line(
+                [1.0, 1.0, 1.0],
+                Some([2.0, 2.0, 2.0]),
+                None,
+                &GuideOptions::default(),
+            )
             .unwrap();
         let nested = nested.close().unwrap();
         builder
@@ -372,4 +380,56 @@ fn replays_nested_definition_construction() {
     assert!(
         group.construction_lines[0].start.is_some() && group.construction_lines[0].end.is_some()
     );
+}
+
+// Ported from the C++ edit_test.cpp (openskp#475): open_existing replays a guide's hidden flag
+// and layer.
+#[test]
+fn replays_guide_hidden_flag_and_layer() {
+    let path = temp_skp("guide_hidden_layer");
+    {
+        let mut builder = create();
+        let guides = builder
+            .add_layer("Guides", &LayerOptions::default())
+            .unwrap();
+        builder
+            .add_face(
+                &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                &FaceOptions::default(),
+            )
+            .unwrap();
+        builder
+            .add_construction_point(
+                [1.0, 2.0, 3.0],
+                &GuideOptions {
+                    layer: None,
+                    hidden: true,
+                },
+            )
+            .unwrap();
+        builder
+            .add_construction_line(
+                [0.0; 3],
+                Some([12.0, 0.0, 0.0]),
+                None,
+                &GuideOptions {
+                    layer: Some(guides),
+                    hidden: true,
+                },
+            )
+            .unwrap();
+        builder.save(&path).unwrap();
+    }
+
+    let mut result = open_existing(&path).unwrap();
+    let rebuilt = parse(result.builder.to_bytes().unwrap());
+    let _ = std::fs::remove_file(&path);
+
+    let points = &rebuilt.root().construction_points;
+    assert_eq!(points.len(), 1);
+    assert!(points[0].hidden);
+    let lines = &rebuilt.root().construction_lines;
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].hidden);
+    assert_eq!(lines[0].layer, "Guides");
 }
