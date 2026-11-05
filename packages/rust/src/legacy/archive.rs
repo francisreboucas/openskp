@@ -96,6 +96,10 @@ impl<'a> Archive<'a> {
     }
 
     pub fn object(&mut self, expect: Option<&str>) -> Result<LegacyObject> {
+        // Measured on Windows with a hostile chain of nested class refs: an optimized build
+        // reaches 256 within a 1 MiB stack (the Windows main thread) but not 512. Debug builds
+        // use far bigger frames and overflow even 2 MiB before reaching 256, so the limit only
+        // keeps release builds safe on default stacks.
         const MAX_OBJECT_DEPTH: usize = 256;
         if self.depth >= MAX_OBJECT_DEPTH {
             return Err(Error::runtime(

@@ -223,7 +223,7 @@ fn meta_units_deep_6400_nesting_does_not_overflow_stack() {
 
 #[test]
 fn xml_unclosed_tags_finish_in_linear_time() {
-    use openskp::internal::xml::{find_element, find_open_tag, find_screenimage};
+    use openskp::internal::xml::{find_element, find_open_tag};
     use std::time::Instant;
 
     let repeated = b"<item attr=\"1\">".repeat(10_000);
@@ -231,11 +231,32 @@ fn xml_unclosed_tags_finish_in_linear_time() {
     assert!(find_element(&repeated, 0, "item").is_none());
     let unclosed_open = b"<item attr=\"1\"".repeat(10_000);
     assert!(find_open_tag(&unclosed_open, 0, "item", true).is_none());
+    assert!(
+        start.elapsed().as_millis() < 500,
+        "unclosed XML tag scan took too long: {:?}",
+        start.elapsed()
+    );
+}
+
+/// `find_screenimage` keeps scanning after an unclosed `<screenimage ...>`, as the regex it
+/// mirrors does, so a later self-closing tag still matches. That makes it quadratic on a run of
+/// unclosed tags, which this only checks stays bounded for a modest input.
+#[test]
+fn find_screenimage_matches_a_later_tag_after_an_unclosed_one() {
+    use openskp::internal::xml::find_screenimage;
+    use std::time::Instant;
+
+    let s = b"<screenimage a=\"1\">no closing tag <screenimage b=\"2\"/>";
+    let m = find_screenimage(s, 0).expect("the self-closing tag matches");
+    assert_eq!(&s[m.attrs], b" b=\"2\"");
+    assert!(m.body.is_none());
+
     let unclosed_screen = b"<screenimage attr=\"1\">".repeat(2_000);
+    let start = Instant::now();
     assert!(find_screenimage(&unclosed_screen, 0).is_none());
     assert!(
         start.elapsed().as_millis() < 2000,
-        "unclosed XML tag scan took too long: {:?}",
+        "unclosed screenimage scan took too long: {:?}",
         start.elapsed()
     );
 }

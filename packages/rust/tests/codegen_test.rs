@@ -510,3 +510,76 @@ fn gondola_v20_generates_plausible_well_formed_code() {
 fn capilla_quiroz_v17_generates_plausible_well_formed_code() {
     generates_plausible_well_formed_code("capilla_quiroz_v17.skp");
 }
+
+/// One parent definition placing 300 distinct leaf definitions: wide, only one level deep.
+/// The parent has the lowest id, so codegen first reaches every leaf through it. The
+/// nesting-depth limit must not count siblings, so every placement is emitted.
+#[test]
+fn a_wide_definition_keeps_every_placement() {
+    const LEAVES: i64 = 300;
+    let mut next_id = 10_000;
+    let mut model = SkpModel::default();
+    let mut parent = Definition {
+        id: 1,
+        name: "Parent".into(),
+        ..Default::default()
+    };
+    for id in 2..=LEAVES + 1 {
+        let mut leaf = Definition {
+            id,
+            name: format!("Leaf{id}"),
+            ..Default::default()
+        };
+        add_face(&mut leaf, &mut next_id, &square(1.0), &[]);
+        model.definitions.insert(id, leaf);
+        parent
+            .instances
+            .push(placement(id, "", [id as f64, 0.0, 0.0]));
+    }
+    model.definitions.insert(1, parent);
+    model
+        .root_mut()
+        .instances
+        .push(placement(1, "Parent", [0.0, 0.0, 0.0]));
+
+    let code = to_rust_code(&model);
+
+    let placed = code.matches(".add_instance(def").count();
+    assert_eq!(placed as i64, LEAVES + 1, "every placement is emitted");
+    assert!(
+        !code.contains("return Err("),
+        "a wide model is not too deep"
+    );
+}
+
+/// A chain of 300 nested definitions exceeds the component-depth limit. The generated build()
+/// fails with an error, as the writer would, rather than silently dropping the deep definitions.
+#[test]
+fn a_too_deep_definition_chain_makes_the_generated_build_fail() {
+    const DEPTH: i64 = 300;
+    let mut next_id = 10_000;
+    let mut model = SkpModel::default();
+    for id in 1..=DEPTH {
+        let mut defn = Definition {
+            id,
+            name: format!("D{id}"),
+            ..Default::default()
+        };
+        add_face(&mut defn, &mut next_id, &square(1.0), &[]);
+        if id < DEPTH {
+            defn.instances.push(placement(id + 1, "", [0.0, 0.0, 0.0]));
+        }
+        model.definitions.insert(id, defn);
+    }
+    model
+        .root_mut()
+        .instances
+        .push(placement(1, "D1", [0.0, 0.0, 0.0]));
+
+    let code = to_rust_code(&model);
+
+    assert!(
+        code.contains("return Err(SkpWriteError::new(") && code.contains("nesting depth exceeds"),
+        "the generated build() reports the depth error"
+    );
+}
