@@ -1555,7 +1555,25 @@ impl SkpBuilder {
         }
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
-        writer.write_dimension(p1, p2, offset)?;
+        writer.write_dimension(p1, p2, offset, None)?;
+        self.new_entity_count += 1;
+        self.face_count += 1;
+        Ok(())
+    }
+
+    /// Add a linear dimension placed by an offset vector (inches, in the same space as the
+    /// endpoints): its component perpendicular to `p1`->`p2` sets the plane and side of the
+    /// dimension line. Coordinates must be finite and the endpoints distinct; a zero offset is
+    /// supported. (C++: the `add_dimension` overload taking a `Point3` offset.)
+    pub fn add_dimension_with_offset_vector(
+        &mut self,
+        p1: Point3,
+        p2: Point3,
+        offset_vector: Point3,
+    ) -> Result<(), SkpWriteError> {
+        self.ensure_geometry_writer()?;
+        let writer = self.geometry_writer.as_mut().expect("ensured above");
+        writer.write_dimension(p1, p2, 0.0, Some(offset_vector))?;
         self.new_entity_count += 1;
         self.face_count += 1;
         Ok(())
@@ -1906,6 +1924,41 @@ impl ComponentDefinitionBuilder<'_> {
         self.check_writable("polylines")?;
         let (writer, def) = self.parts();
         def.new_entity_count += add_polyline_to(writer, &mut def.topology, points, options)?;
+        Ok(())
+    }
+
+    /// Add a free linear dimension - like [`SkpBuilder::add_dimension`], in definition-local
+    /// inches.
+    pub fn add_dimension(
+        &mut self,
+        p1: Point3,
+        p2: Point3,
+        offset: f64,
+    ) -> Result<(), SkpWriteError> {
+        check_finite_point(p1, "dimension point")?;
+        check_finite_point(p2, "dimension point")?;
+        if !offset.is_finite() {
+            return Err(SkpWriteError::new("dimension offset must be finite"));
+        }
+        self.check_writable("dimensions")?;
+        let (writer, def) = self.parts();
+        writer.write_dimension(p1, p2, offset, None)?;
+        def.new_entity_count += 1;
+        Ok(())
+    }
+
+    /// Add a linear dimension placed by an offset vector - like
+    /// [`SkpBuilder::add_dimension_with_offset_vector`], in definition-local inches.
+    pub fn add_dimension_with_offset_vector(
+        &mut self,
+        p1: Point3,
+        p2: Point3,
+        offset_vector: Point3,
+    ) -> Result<(), SkpWriteError> {
+        self.check_writable("dimensions")?;
+        let (writer, def) = self.parts();
+        writer.write_dimension(p1, p2, 0.0, Some(offset_vector))?;
+        def.new_entity_count += 1;
         Ok(())
     }
 

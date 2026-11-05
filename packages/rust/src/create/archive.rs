@@ -7,7 +7,9 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::geometry::{plane_from_polygon, plane_tolerance, uv_matrix_for_face};
+use super::geometry::{
+    cross3, normalize3, plane_from_polygon, plane_tolerance, uv_matrix_for_face,
+};
 use super::scaffold_blank_v17::{ATTRIBUTE_NAMED_SLOT, ATTR_CONTAINER_SLOT, CCAMERA_SLOT};
 use super::{
     AttributeDict, AttributeValue, Color4, GuideOptions, Matrix3x3, Point3, SkpWriteError, UvPoint,
@@ -614,9 +616,45 @@ impl ArchiveWriter {
         p1: Point3,
         p2: Point3,
         offset: f64,
+        offset_vector: Option<Point3>,
     ) -> Result<(), SkpWriteError> {
         if p1 == p2 {
             return Err(SkpWriteError::new("add_dimension endpoints coincide"));
+        }
+        let mut offset = offset;
+        let mut normal = [0.0, 0.0, 1.0];
+        let mut xaxis = [1.0, 0.0, 0.0];
+        if let Some(v) = offset_vector {
+            if p1.iter().chain(&p2).chain(&v).any(|c| !c.is_finite()) {
+                return Err(SkpWriteError::new(
+                    "add_dimension coordinates must be finite",
+                ));
+            }
+            xaxis = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+            let length = xaxis[0].hypot(xaxis[1]).hypot(xaxis[2]);
+            if !length.is_finite() || length == 0.0 {
+                return Err(SkpWriteError::new(
+                    "add_dimension segment length must be finite and nonzero",
+                ));
+            }
+            xaxis = [xaxis[0] / length, xaxis[1] / length, xaxis[2] / length];
+            // Only the component perpendicular to the measured segment places the line.
+            normal = cross3(xaxis, v);
+            offset = normal[0].hypot(normal[1]).hypot(normal[2]);
+            if !offset.is_finite() {
+                return Err(SkpWriteError::new("add_dimension offset must be finite"));
+            }
+            if offset > 0.0 {
+                normal = [normal[0] / offset, normal[1] / offset, normal[2] / offset];
+            } else {
+                // A stable plane is still needed when the dimension line has zero offset.
+                let seed = if xaxis[2].abs() < 0.9 {
+                    [0.0, 0.0, 1.0]
+                } else {
+                    [0.0, 1.0, 0.0]
+                };
+                normal = normalize3(cross3(xaxis, seed))?;
+            }
         }
         self.new_of_known_class("CDimensionLinear", DIMENSION_LINEAR_SCHEMA);
         self.preamble(None, false);
@@ -639,12 +677,15 @@ impl ArchiveWriter {
             self.buf.put_f64(v);
         }
         self.buf.put_u16(0);
-        // placement block: SDK free-dimension defaults + our offset
+        // placement block: the plane normal and X axis (SDK free-dimension defaults unless an
+        // offset vector placed the line), the constrained axis, and the offset
         self.buf.put_zeros(2);
-        for v in [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0] {
+        self.buf.put_f64(0.0);
+        for v in normal.into_iter().chain(xaxis) {
             self.buf.put_f64(v);
         }
-        self.buf.put_u32(0);
+        // Constrain to the plane X axis: the signed side is encoded by its normal.
+        self.buf.put_u32(u32::from(offset_vector.is_some()));
         self.buf.put_f64(offset);
         self.buf.put_f64(0.0);
         self.buf.put_u32(1);
