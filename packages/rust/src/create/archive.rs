@@ -9,7 +9,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::geometry::{plane_from_polygon, plane_tolerance, uv_matrix_for_face};
 use super::scaffold_blank_v17::{ATTRIBUTE_NAMED_SLOT, ATTR_CONTAINER_SLOT, CCAMERA_SLOT};
-use super::{AttributeDict, AttributeValue, Color4, Matrix3x3, Point3, SkpWriteError, UvPoint};
+use super::{
+    AttributeDict, AttributeValue, Color4, GuideOptions, Matrix3x3, Point3, SkpWriteError, UvPoint,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Class schema versions (ground truth from real SketchUp files unless noted).
@@ -517,6 +519,16 @@ impl ArchiveWriter {
         self.drawbase(0, 0, false, EdgeFlags::default());
     }
 
+    /// A guide's drawbase: default material, the guide's layer and hidden flag.
+    fn guide_drawbase(&mut self, options: &GuideOptions) {
+        self.drawbase(
+            0,
+            options.layer.unwrap_or(0),
+            options.hidden,
+            EdgeFlags::default(),
+        );
+    }
+
     fn write_vertex(&mut self, point: Point3) -> i32 {
         let slot = self.new_of_known_class("CVertex", 0);
         self.preamble(None, false);
@@ -686,6 +698,7 @@ impl ArchiveWriter {
         point: Point3,
         point2: Option<Point3>,
         direction: Option<Point3>,
+        options: &GuideOptions,
     ) -> Result<(), SkpWriteError> {
         let (dir, start_param, end_param) = match (point2, direction) {
             (Some(p2), None) => {
@@ -719,7 +732,7 @@ impl ArchiveWriter {
         };
         self.new_of_known_class("CConstructionLine", CONSTRUCTION_LINE_SCHEMA);
         self.preamble(None, false);
-        self.plain_drawbase();
+        self.guide_drawbase(options);
         for v in [
             point[0],
             point[1],
@@ -738,10 +751,10 @@ impl ArchiveWriter {
 
     /// A construction point. A second, always-zero 3-double block and a trailing zero byte follow
     /// the position - reserved, written as zero to match every real sample.
-    pub fn write_construction_point(&mut self, position: Point3) {
+    pub fn write_construction_point(&mut self, position: Point3, options: &GuideOptions) {
         self.new_of_known_class("CConstructionPoint", CONSTRUCTION_POINT_SCHEMA);
         self.preamble(None, false);
-        self.plain_drawbase();
+        self.guide_drawbase(options);
         for v in [position[0], position[1], position[2], 0.0, 0.0, 0.0] {
             self.buf.put_f64(v);
         }

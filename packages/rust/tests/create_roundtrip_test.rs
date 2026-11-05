@@ -10,8 +10,8 @@ use std::f64::consts::PI;
 
 use openskp::create::{
     create, ArcOptions, AttributeDict, AttributeValue, CircleOptions, DefinitionOptions,
-    FaceOptions, GroupInstanceOptions, GroupOptions, ImageOptions, InstanceOptions, LayerOptions,
-    Point3, PolylineOptions, SkpBuilder, UvCorrespondence, DEFAULT_DIMENSION_OFFSET,
+    FaceOptions, GroupInstanceOptions, GroupOptions, GuideOptions, ImageOptions, InstanceOptions,
+    LayerOptions, Point3, PolylineOptions, SkpBuilder, UvCorrespondence, DEFAULT_DIMENSION_OFFSET,
     DEFAULT_TEXT_LEADER,
 };
 use openskp::{AttributeKind, ParseOptions, SkpFile, SkpModel};
@@ -1294,11 +1294,22 @@ fn construction_line_and_point_do_not_corrupt_the_file() {
         &FaceOptions::default(),
     )
     .unwrap();
-    b.add_construction_point([1.0, 2.0, 3.0]).unwrap();
-    b.add_construction_line([0.0; 3], Some([10.0, 0.0, 0.0]), None)
+    b.add_construction_point([1.0, 2.0, 3.0], &GuideOptions::default())
         .unwrap();
-    b.add_construction_line([0.0; 3], None, Some([0.0, 0.0, 1.0]))
-        .unwrap();
+    b.add_construction_line(
+        [0.0; 3],
+        Some([10.0, 0.0, 0.0]),
+        None,
+        &GuideOptions::default(),
+    )
+    .unwrap();
+    b.add_construction_line(
+        [0.0; 3],
+        None,
+        Some([0.0, 0.0, 1.0]),
+        &GuideOptions::default(),
+    )
+    .unwrap();
     b.add_section_plane([10.0, 20.0, 30.0], [0.0, 0.0, 1.0])
         .unwrap(); // still readable afterwards
     let model = round_trip(&mut b);
@@ -1326,17 +1337,35 @@ fn nested_definition_construction_round_trips() {
             &FaceOptions::default(),
         )
         .unwrap();
-    nested.add_construction_point([4.0, 5.0, 6.0]).unwrap();
     nested
-        .add_construction_line([1.0, 1.0, 1.0], Some([2.0, 2.0, 2.0]), None)
+        .add_construction_point([4.0, 5.0, 6.0], &GuideOptions::default())
+        .unwrap();
+    nested
+        .add_construction_line(
+            [1.0, 1.0, 1.0],
+            Some([2.0, 2.0, 2.0]),
+            None,
+            &GuideOptions::default(),
+        )
         .unwrap();
     let nested = nested.close().unwrap();
     b.add_instance(nested, &InstanceOptions::default()).unwrap();
-    b.add_construction_point([1.0, 2.0, 3.0]).unwrap();
-    b.add_construction_line([0.0, 0.0, 0.0], Some([12.0, 0.0, 0.0]), None)
+    b.add_construction_point([1.0, 2.0, 3.0], &GuideOptions::default())
         .unwrap();
-    b.add_construction_line([0.0, 0.0, 4.0], None, Some([0.0, 0.0, 1.0]))
-        .unwrap();
+    b.add_construction_line(
+        [0.0, 0.0, 0.0],
+        Some([12.0, 0.0, 0.0]),
+        None,
+        &GuideOptions::default(),
+    )
+    .unwrap();
+    b.add_construction_line(
+        [0.0, 0.0, 4.0],
+        None,
+        Some([0.0, 0.0, 1.0]),
+        &GuideOptions::default(),
+    )
+    .unwrap();
 
     let model = round_trip(&mut b);
     let root = model.root();
@@ -1420,4 +1449,64 @@ fn circle_and_arc_references_decode_to_the_same_vertices() {
             assert_near(a.z, b.z, 1e-9);
         }
     }
+}
+
+// Ported from the C++ create_test.cpp (openskp#475): a guide's hidden flag and layer.
+#[test]
+fn guide_options_round_trip_hidden_flag_and_layer() {
+    let mut b = create();
+    let guides = b.add_layer("Guides", &LayerOptions::default()).unwrap();
+    b.add_face(&square(), &FaceOptions::default()).unwrap();
+    let hidden = GuideOptions {
+        layer: None,
+        hidden: true,
+    };
+    let on_guides = GuideOptions {
+        layer: Some(guides),
+        hidden: false,
+    };
+    let hidden_on_guides = GuideOptions {
+        layer: Some(guides),
+        hidden: true,
+    };
+    b.add_construction_point([1.0, 2.0, 3.0], &hidden).unwrap();
+    b.add_construction_point([4.0, 5.0, 6.0], &on_guides)
+        .unwrap();
+    b.add_construction_line([0.0; 3], Some([10.0, 0.0, 0.0]), None, &hidden_on_guides)
+        .unwrap();
+    b.add_construction_line(
+        [0.0, 0.0, 4.0],
+        None,
+        Some([0.0, 0.0, 1.0]),
+        &GuideOptions::default(),
+    )
+    .unwrap();
+
+    let model = round_trip(&mut b);
+    let points = &model.root().construction_points;
+    assert_eq!(points.len(), 2);
+    assert!(points[0].hidden);
+    assert!(points[0].layer.is_empty());
+    assert!(!points[1].hidden);
+    assert_eq!(points[1].layer, "Guides");
+    let lines = &model.root().construction_lines;
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].hidden);
+    assert_eq!(lines[0].layer, "Guides");
+    assert!(!lines[1].hidden);
+    assert!(lines[1].layer.is_empty());
+}
+
+#[test]
+fn guide_options_reject_a_foreign_layer_handle() {
+    let mut b = create();
+    b.add_face(&square(), &FaceOptions::default()).unwrap();
+    let foreign = GuideOptions {
+        layer: Some(42),
+        hidden: false,
+    };
+    assert!(b.add_construction_point([1.0, 2.0, 3.0], &foreign).is_err());
+    assert!(b
+        .add_construction_line([0.0; 3], Some([1.0, 0.0, 0.0]), None, &foreign)
+        .is_err());
 }

@@ -177,6 +177,16 @@ impl MaterialColor for Color4 {
 
 const DEFAULT_ATTRIBUTE_DICT_NAME: &str = "attributes";
 
+/// Options for `add_construction_line` / `add_construction_point` on [`SkpBuilder`] and
+/// [`ComponentDefinitionBuilder`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GuideOptions {
+    /// Layer handle (from `add_layer`); `None` = default (Layer0).
+    pub layer: Option<i32>,
+    /// Hides the guide itself (SketchUp's "Hide" on this specific guide).
+    pub hidden: bool,
+}
+
 /// Options for `add_face`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FaceOptions {
@@ -1387,12 +1397,14 @@ impl SkpBuilder {
 
     /// Add a construction (guide) line through `point`: pass exactly one of `point2` (a bounded
     /// segment, like `Entities#add_cline(p1, p2)`) or `direction` (unbounded, like
-    /// `Entities#add_cline(point, vector)`).
+    /// `Entities#add_cline(point, vector)`). `options` places the guide on a layer and/or hides
+    /// it.
     pub fn add_construction_line(
         &mut self,
         point: Point3,
         point2: Option<Point3>,
         direction: Option<Point3>,
+        options: &GuideOptions,
     ) -> Result<(), SkpWriteError> {
         check_finite_point(point, "construction line point")?;
         if let Some(p2) = point2 {
@@ -1401,20 +1413,26 @@ impl SkpBuilder {
         if let Some(d) = direction {
             check_finite_point(d, "construction line direction")?;
         }
+        self.check_layer_handle(options.layer)?;
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
-        writer.write_construction_line(point, point2, direction)?;
+        writer.write_construction_line(point, point2, direction, options)?;
         self.new_entity_count += 1;
         self.face_count += 1;
         Ok(())
     }
 
-    /// Add a construction (guide) point.
-    pub fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError> {
+    /// Add a construction (guide) point. `options` places the guide on a layer and/or hides it.
+    pub fn add_construction_point(
+        &mut self,
+        position: Point3,
+        options: &GuideOptions,
+    ) -> Result<(), SkpWriteError> {
         check_finite_point(position, "construction point")?;
+        self.check_layer_handle(options.layer)?;
         self.ensure_geometry_writer()?;
         let writer = self.geometry_writer.as_mut().expect("ensured above");
-        writer.write_construction_point(position);
+        writer.write_construction_point(position, options);
         self.new_entity_count += 1;
         self.face_count += 1;
         Ok(())
@@ -1720,6 +1738,7 @@ impl ComponentDefinitionBuilder<'_> {
         point: Point3,
         point2: Option<Point3>,
         direction: Option<Point3>,
+        options: &GuideOptions,
     ) -> Result<(), SkpWriteError> {
         check_finite_point(point, "construction line point")?;
         if let Some(p2) = point2 {
@@ -1729,19 +1748,25 @@ impl ComponentDefinitionBuilder<'_> {
             check_finite_point(d, "construction line direction")?;
         }
         self.check_writable("construction lines")?;
+        self.skp.check_layer_handle(options.layer)?;
         let (writer, def) = self.parts();
-        writer.write_construction_line(point, point2, direction)?;
+        writer.write_construction_line(point, point2, direction, options)?;
         def.new_entity_count += 1;
         Ok(())
     }
 
     /// Add a construction point - like [`SkpBuilder::add_construction_point`], in
     /// definition-local inches.
-    pub fn add_construction_point(&mut self, position: Point3) -> Result<(), SkpWriteError> {
+    pub fn add_construction_point(
+        &mut self,
+        position: Point3,
+        options: &GuideOptions,
+    ) -> Result<(), SkpWriteError> {
         check_finite_point(position, "construction point")?;
         self.check_writable("construction points")?;
+        self.skp.check_layer_handle(options.layer)?;
         let (writer, def) = self.parts();
-        writer.write_construction_point(position);
+        writer.write_construction_point(position, options);
         def.new_entity_count += 1;
         Ok(())
     }

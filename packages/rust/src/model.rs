@@ -645,6 +645,12 @@ pub struct ConstructionLine {
     pub direction: Vec3,
     pub start: Option<Vec3>,
     pub end: Option<Vec3>,
+    /// Name of the layer (tag) the guide is assigned to, or `""` for the
+    /// default layer (Layer0).
+    pub layer: String,
+    /// Whether the guide is hidden (SketchUp's "Hide" on this specific guide,
+    /// not a layer/tag visibility toggle).
+    pub hidden: bool,
 }
 
 impl Default for ConstructionLine {
@@ -654,6 +660,8 @@ impl Default for ConstructionLine {
             direction: [1.0, 0.0, 0.0],
             start: None,
             end: None,
+            layer: String::new(),
+            hidden: false,
         }
     }
 }
@@ -662,6 +670,12 @@ impl Default for ConstructionLine {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ConstructionPoint {
     pub position: Vec3,
+    /// Name of the layer (tag) the guide is assigned to, or `""` for the
+    /// default layer (Layer0).
+    pub layer: String,
+    /// Whether the guide is hidden (SketchUp's "Hide" on this specific guide,
+    /// not a layer/tag visibility toggle).
+    pub hidden: bool,
 }
 
 /// A saved scene ("page").

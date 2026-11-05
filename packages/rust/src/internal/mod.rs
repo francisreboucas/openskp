@@ -250,7 +250,6 @@ pub struct RawInstance {
     pub ref_idx: Option<EntityId>,
     pub material_id: Option<EntityId>,
     pub matrix: Vec<f64>,
-    pub children: Vec<TlvNode>,
     pub layer: String,
     /// The "dynamic_attributes" dictionary only, stringified.
     pub properties: BTreeMap<String, String>,

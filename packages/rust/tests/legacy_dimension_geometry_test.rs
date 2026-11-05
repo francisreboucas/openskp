@@ -11,7 +11,7 @@
 mod common;
 
 use common::{concat, f64s};
-use openskp::create::{create, Point3};
+use openskp::create::{create, GuideOptions, Point3};
 use openskp::internal::read_u16;
 use openskp::{ParseOptions, SkpFile, SkpModel, Vec3};
 
@@ -53,7 +53,7 @@ fn fixture() -> Vec<u8> {
     builder.add_dimension(C, D, 3.0).unwrap();
     // A successful parse must retain entities after the annotations, too.
     builder
-        .add_construction_point([101.0, 102.0, 103.0])
+        .add_construction_point([101.0, 102.0, 103.0], &GuideOptions::default())
         .unwrap();
     builder.to_bytes().unwrap()
 }

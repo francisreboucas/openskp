@@ -39,6 +39,21 @@ fn varint_all(p: &[u8]) -> Result<u64> {
     parse_varint(p, 0, p.len())
 }
 
+/// A guide's layer id (as text, `""` when absent) and hidden flag. Guides
+/// (6942 / 6C42) wrap the usual drawing-element base in 6842: its D007
+/// container holds D307 (display flags, base 0x06, +0x01 hidden) and D207
+/// (layer entity id), the same leaves edges/faces/instances carry.
+fn guide_drawbase(e: &TlvNode) -> Result<(String, bool)> {
+    let hidden = find_node(&e.children, "D307")
+        .and_then(|f| f.payload.first())
+        .is_some_and(|&flags| flags & 0x01 != 0);
+    let layer = match find_node(&e.children, "D207") {
+        Some(l) if !l.payload.is_empty() => varint_all(&l.payload)?.to_string(),
+        _ => String::new(),
+    };
+    Ok((layer, hidden))
+}
+
 /// The node's entity id: a direct DE05 child, a DC05 child wrapping a DE05,
 /// or (failing both) the first one found deeper down.
 pub(crate) fn entity_id(n: &TlvNode) -> Result<Option<EntityId>> {
@@ -371,7 +386,6 @@ pub fn collect_geometry(es: &[TlvNode], b: &mut GeometryBuilder) -> Result<()> {
             let mut i = RawInstance {
                 offset: e.offset,
                 id: entity_id(e)?,
-                children: e.children.clone(),
                 ..Default::default()
             };
             if let Some(g) = find_node(&e.children, "6819") {
@@ -434,21 +448,27 @@ pub fn collect_geometry(es: &[TlvNode], b: &mut GeometryBuilder) -> Result<()> {
                             point[2] + direction[2] * t,
                         ]
                     };
+                    let (layer, hidden) = guide_drawbase(e)?;
                     b.construction_lines.push(ConstructionLine {
                         point,
                         direction,
                         start: (start_param.abs() < HUGE_PARAM).then(|| at(start_param)),
                         end: (end_param.abs() < HUGE_PARAM).then(|| at(end_param)),
+                        layer,
+                        hidden,
                     });
                 }
             }
         } else if tag == "6C42" {
-            // VFF CConstructionPoint (list 9213): 6D42 position, 6E42 unused
-            // zeros, 6F42 u8.
+            // VFF CConstructionPoint (list 9213): 6D42 position, 6E42 a second
+            // 3xf64 block (often zeros, not decoded), 6F42 u8.
             if let Some(p) = find_node(&e.children, "6D42") {
                 if p.payload.len() >= 24 {
+                    let (layer, hidden) = guide_drawbase(e)?;
                     b.construction_points.push(ConstructionPoint {
                         position: vec3_at(&p.payload, 0)?,
+                        layer,
+                        hidden,
                     });
                 }
             }

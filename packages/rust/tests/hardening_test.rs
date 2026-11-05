@@ -1,4 +1,6 @@
-use openskp::create::{create, ArcOptions, CircleOptions, FaceOptions, PolylineOptions};
+use openskp::create::{
+    create, ArcOptions, CircleOptions, FaceOptions, GuideOptions, PolylineOptions,
+};
 use openskp::internal::bytes::parse_tlv_recursive;
 
 fn make_nested_tlv(levels: usize) -> Vec<u8> {
@@ -174,7 +176,7 @@ fn builders_reject_non_finite_coordinates() {
     // add_construction_point
     assert!(
         builder
-            .add_construction_point([0.0, f64::INFINITY, 0.0])
+            .add_construction_point([0.0, f64::INFINITY, 0.0], &GuideOptions::default())
             .is_err(),
         "add_construction_point must reject Infinity"
     );

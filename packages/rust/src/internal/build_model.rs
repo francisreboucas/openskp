@@ -38,6 +38,12 @@ fn resolve_layers(d: &mut RawDefinition, names: &BTreeMap<EntityId, String>, o: 
     for f in d.builder.faces.values_mut() {
         resolve_layer(&mut f.layer, names, o);
     }
+    for cl in &mut d.builder.construction_lines {
+        resolve_layer(&mut cl.layer, names, o);
+    }
+    for cp in &mut d.builder.construction_points {
+        resolve_layer(&mut cp.layer, names, o);
+    }
 }
 
 fn definition(

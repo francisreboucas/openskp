@@ -13,9 +13,9 @@ use std::f64::consts::PI;
 
 use openskp::create::{
     create, ArcOptions, AttributeDict, AttributeValue, CircleOptions, DefinitionOptions,
-    FaceOptions, GroupInstanceOptions, GroupOptions, ImageOptions, InstanceOptions, LayerOptions,
-    Point3, PolylineOptions, SkpBuilder, SkpWriteError, UvCorrespondence, DEFAULT_DIMENSION_OFFSET,
-    DEFAULT_TEXT_LEADER,
+    FaceOptions, GroupInstanceOptions, GroupOptions, GuideOptions, ImageOptions, InstanceOptions,
+    LayerOptions, Point3, PolylineOptions, SkpBuilder, SkpWriteError, UvCorrespondence,
+    DEFAULT_DIMENSION_OFFSET, DEFAULT_TEXT_LEADER,
 };
 
 const PNG: &str = "tests/fixtures/create_reference/fake.png";
@@ -650,14 +650,34 @@ fn nested() {
                 &[[0.0, 0.0, 7.0], [1.0, 0.0, 7.0], [1.0, 1.0, 7.0]],
                 &PolylineOptions::default(),
             )?;
-            car.add_construction_point([4.0, 5.0, 6.0])?;
-            car.add_construction_line([1.0, 1.0, 1.0], Some([2.0, 2.0, 2.0]), None)?;
-            car.add_construction_line([1.0, 1.0, 1.0], None, Some([0.0, 3.0, 0.0]))?;
+            car.add_construction_point([4.0, 5.0, 6.0], &GuideOptions::default())?;
+            car.add_construction_line(
+                [1.0, 1.0, 1.0],
+                Some([2.0, 2.0, 2.0]),
+                None,
+                &GuideOptions::default(),
+            )?;
+            car.add_construction_line(
+                [1.0, 1.0, 1.0],
+                None,
+                Some([0.0, 3.0, 0.0]),
+                &GuideOptions::default(),
+            )?;
             let car = car.close()?;
             b.add_instance(car, &InstanceOptions::default())?;
-            b.add_construction_point([1.0, 2.0, 3.0])?;
-            b.add_construction_line([0.0, 0.0, 0.0], Some([12.0, 0.0, 0.0]), None)?;
-            b.add_construction_line([0.0, 0.0, 4.0], None, Some([0.0, 0.0, 1.0]))
+            b.add_construction_point([1.0, 2.0, 3.0], &GuideOptions::default())?;
+            b.add_construction_line(
+                [0.0, 0.0, 0.0],
+                Some([12.0, 0.0, 0.0]),
+                None,
+                &GuideOptions::default(),
+            )?;
+            b.add_construction_line(
+                [0.0, 0.0, 4.0],
+                None,
+                Some([0.0, 0.0, 1.0]),
+                &GuideOptions::default(),
+            )
         },
         true,
     );
@@ -717,9 +737,19 @@ fn annotations() {
             b.add_dimension([0.0, 0.0, 0.0], [10.0, 0.0, 0.0], DEFAULT_DIMENSION_OFFSET)?;
             b.add_dimension([0.0, 5.0, 0.0], [10.0, 5.0, 0.0], -3.5)?;
             b.add_text("Unicode \u{e9}\u{1F600}", [1.0, 1.0, 1.0], [1.0, 2.0, 3.0])?;
-            b.add_construction_point([1.0, 2.0, 3.0])?;
-            b.add_construction_line([0.0, 0.0, 0.0], Some([10.0, 0.0, 0.0]), None)?;
-            b.add_construction_line([0.0, 0.0, 0.0], None, Some([0.0, 0.0, 1.0]))
+            b.add_construction_point([1.0, 2.0, 3.0], &GuideOptions::default())?;
+            b.add_construction_line(
+                [0.0, 0.0, 0.0],
+                Some([10.0, 0.0, 0.0]),
+                None,
+                &GuideOptions::default(),
+            )?;
+            b.add_construction_line(
+                [0.0, 0.0, 0.0],
+                None,
+                Some([0.0, 0.0, 1.0]),
+                &GuideOptions::default(),
+            )
         },
         false,
     );
