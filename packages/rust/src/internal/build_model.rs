@@ -213,6 +213,7 @@ pub fn build_model(p: RawParsed, o: &ParseOptions) -> SkpModel {
             offset: dm.offset,
             plane_x: dm.plane_x,
             normal: dm.normal,
+            offset_vector: dm.offset_vector,
         });
     }
 

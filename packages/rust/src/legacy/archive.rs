@@ -7,11 +7,12 @@ use std::rc::Rc;
 
 use super::reader::R;
 use super::{
-    find_v20_filler_marker, legacy_connection_paths, legacy_instance_has_guid, LegacyKind,
-    LegacyObject, LegacySlotEntry, LegacyValue, FIRST_DIB_OBJECT, FIRST_NAMED_INSTANCE, FIRST_V4,
-    MAX_V20_FILLER_PAD,
+    anchored_text_connection, find_v20_filler_marker, legacy_connection_paths,
+    legacy_instance_has_guid, LegacyDimension, LegacyKind, LegacyObject, LegacySlotEntry,
+    LegacyValue, FIRST_DIB_OBJECT, FIRST_NAMED_INSTANCE, FIRST_V4, MAX_V20_FILLER_PAD,
 };
 use crate::internal::{read_f64, read_u16, read_u32, Error, Result};
+use crate::model::constrained_offset_vector;
 
 /// A decoded value (always present for an object read in full).
 pub(crate) type Value = Rc<LegacyValue>;
@@ -64,6 +65,9 @@ pub(crate) struct Archive<'a> {
     cum_delta: u64,
     annot_watermark: Option<u64>,
     burn_stack: Vec<i32>, // per-entity-list burned-item credits
+    // per-entity-list instances an annotation's path wrote in full (see
+    // connection_paths) that the list has not listed yet, in order
+    inline_stack: Vec<Vec<u64>>,
     cline_tail: Option<usize>,
     depth: usize,
 }
@@ -83,6 +87,7 @@ impl<'a> Archive<'a> {
             cum_delta: 0,
             annot_watermark: None,
             burn_stack: Vec::new(),
+            inline_stack: Vec::new(),
             cline_tail: None,
             depth: 0,
         }
@@ -234,28 +239,38 @@ impl<'a> Archive<'a> {
     // walk has not reached yet - SketchUp serializes a label/dimension BEFORE
     // the entity it anchors to when both live in the same entity list, so the
     // reference can legitimately point forward.
-    fn entity_ref(&mut self) -> Result<Option<u64>> {
+    //
+    // With `allow_inline`, an object MFC wrote in full here (the first
+    // reference to it) is read and registered, and its slot returned; without
+    // it, that is an error.
+    fn entity_ref(&mut self, allow_inline: bool) -> Result<Option<u64>> {
+        let start = self.r.p;
         let tag = self.r.u16()?;
         if tag == 0 {
             return Ok(None);
         }
         if tag == 0x7fff {
             let big = self.r.u32()?;
-            if big & 0x8000_0000 != 0 {
-                return Err(Error::runtime("entity ref is a new object"));
+            if big & 0x8000_0000 == 0 {
+                return Ok(Some(u64::from(big)));
             }
-            return Ok(Some(u64::from(big)));
+        } else if tag != 0xffff && tag & 0x8000 == 0 {
+            return Ok(Some(u64::from(tag)));
         }
-        if tag == 0xffff || tag & 0x8000 != 0 {
+        if !allow_inline {
             return Err(Error::runtime("entity ref is a new object"));
         }
-        Ok(Some(u64::from(tag)))
+        self.r.p = start;
+        Ok(Some(self.object(None)?.slot))
     }
 
     // The instance paths that follow each connection ref (see
     // legacy_connection_paths): consumes them, reading a path entry that MFC
-    // wrote in full as a real object.
-    fn connection_paths(&mut self) -> Result<()> {
+    // wrote in full as a real object. A path runs from the outermost instance
+    // in, so its first one is an entity of the list the annotation is in; one
+    // written here in full is noted for that list (see entity_list). Returns
+    // false when the connection carries any instance path.
+    fn connection_paths(&mut self) -> Result<bool> {
         let d = self.r.d;
         let pos = self.r.p;
         let res = legacy_connection_paths(d, pos, |at| {
@@ -264,7 +279,40 @@ impl<'a> Archive<'a> {
             Ok((q.slot, self.r.p))
         })?;
         self.r.p = res.next;
-        Ok(())
+        if let Some(pending) = self.inline_stack.last_mut() {
+            for (refs, written) in [(&res.first, &res.first_new), (&res.second, &res.second_new)] {
+                if let (Some(Some(slot)), Some(true)) = (refs.first(), written.first()) {
+                    pending.push(*slot);
+                }
+            }
+        }
+        Ok(res.extra.is_none() && res.first.is_empty() && res.second.is_empty())
+    }
+
+    // The walker slot of the back-reference at the cursor, without moving it;
+    // None when the next tag is anything else.
+    fn peek_backref(&self) -> Option<u64> {
+        let d = self.r.d;
+        let p = self.r.p;
+        if p + 2 > d.len() {
+            return None;
+        }
+        let mut slot = u64::from(u16::from_le_bytes([d[p], d[p + 1]]));
+        if slot == 0x7fff {
+            if p + 6 > d.len() {
+                return None;
+            }
+            slot = u64::from(u32::from_le_bytes([d[p + 2], d[p + 3], d[p + 4], d[p + 5]]));
+            if slot & 0x8000_0000 != 0 {
+                return None;
+            }
+        } else if slot == 0 || slot & 0x8000 != 0 {
+            return None;
+        }
+        if !self.burns.is_empty() && slot >= self.burns[0].0 {
+            return self.translate_ref(slot);
+        }
+        Some(slot)
     }
 
     // True when the u16 at `at` starts an object read in one of the
@@ -340,19 +388,20 @@ impl<'a> Archive<'a> {
         v.tw = self.r.f64()?;
         v.th = self.r.f64()?;
         v.tex_file = self.r.utf16()?;
-        let c = self.r.raw(9)?; // RGBA + 00 + RGBA (colour stored twice)
-        v.r = i32::from(c[0]);
-        v.g = i32::from(c[1]);
-        v.b = i32::from(c[2]);
-        // c[3] is not a colour alpha byte - it feeds the colorized check
-        // below alongside blob[4]. v.a keeps its default (255).
+        let c = self.r.raw(9)?; // image average RGBA + 00 + material paint RGBA
+        v.r = i32::from(c[5]);
+        v.g = i32::from(c[6]);
+        v.b = i32::from(c[7]);
+        // c[3] is the image average alpha, not the material opacity. Textured
+        // materials/layers use the separate opacity field; v.a stays 255.
         self.r.utf16()?;
-        let blob = self.r.raw(8)?; // u32 + u32 colorized flag
+        let blob = self.r.raw(8)?; // u32 material type + u32 colorize mode
         v.opacity = self.r.f64()?;
         if self.r.u8()? == 0 {
             v.opacity = 0.0;
         }
-        v.colorized = blob[4] != 0 || c[3] == 255;
+        v.colorized = blob[0] == 2;
+        v.colorize_type = if blob[4] == 1 { 1 } else { 0 };
         Ok(())
     }
 
@@ -826,8 +875,8 @@ impl<'a> Archive<'a> {
                 // (entity_ref() tolerates that).
                 self.preamble()?;
                 v.k = LegacyKind::Relationship;
-                self.entity_ref()?;
-                self.entity_ref()?;
+                self.entity_ref(false)?;
+                self.entity_ref(false)?;
             }
             "CConstructionLine" => {
                 self.preamble()?;
@@ -932,19 +981,72 @@ impl<'a> Archive<'a> {
                 // skip walks off the rails on large models. SketchUp 4 and 5
                 // write neither the font above nor the 5 bytes in front of the
                 // first connection block, nor the trailing u32 of the last.
-                self.r.skip(if self.ver >= 6 { 37 } else { 32 })?;
-                self.entity_ref()?; // connection point 1 (may be null)
-                self.connection_paths()?;
-                self.r.skip(32)?;
-                self.entity_ref()?; // connection point 2 (may be null)
-                self.connection_paths()?;
-                self.r.skip(if self.ver >= 6 { 72 } else { 68 })?;
+                let mut decoded = LegacyDimension::default();
+                if self.ver >= 6 {
+                    self.r.skip(5)?;
+                }
+                for second in [false, true] {
+                    // [u32 type][u32 4][point3d]: type 1 stores the point
+                    // inline.
+                    let block = self.r.raw(32)?;
+                    let mut point = (read_u32(block, 0)? == 1).then_some([
+                        read_f64(block, 8)?,
+                        read_f64(block, 16)?,
+                        read_f64(block, 24)?,
+                    ]);
+                    // The first reference to an anchored vertex can serialize
+                    // it in full. Keep forward references unresolved until the
+                    // complete archive is read (see fill).
+                    let mut r = self.entity_ref(true)?;
+                    if !self.connection_paths()? {
+                        // Do not expose definition-local vertex coordinates as
+                        // owner/world points until the nested instance path
+                        // can also be resolved.
+                        point = None;
+                        r = None;
+                    }
+                    if second {
+                        decoded.geometry.b = point;
+                        decoded.connect2 = r;
+                    } else {
+                        decoded.geometry.a = point;
+                        decoded.connect1 = r;
+                    }
+                }
+                let placement = self.r.raw(if self.ver >= 6 { 72 } else { 68 })?;
+                let f = |at| read_f64(placement, at);
+                let normal = [f(0)?, f(8)?, f(16)?];
+                let x = [f(24)?, f(32)?, f(40)?];
+                let axis = read_u32(placement, 48)?;
+                let g = &mut decoded.geometry;
+                g.normal = Some(normal);
+                g.plane_x = Some(x);
+                g.offset = f(52)?;
+                // X/Y-constrained dimensions use their plane frame,
+                // independent of the order of the measured endpoints.
+                // Preserve other modes without guessing.
+                g.offset_vector = constrained_offset_vector(axis, normal, x, g.offset);
+                v.dimension = Some(Box::new(decoded));
             }
             "CText" => {
                 self.preamble()?;
                 v.k = LegacyKind::Text;
                 self.draw(&mut v)?;
                 self.object(Some("CSkFont"))?;
+                if anchored_text_connection(self.r.d, self.r.p) {
+                    // An anchored connection block is followed, as a
+                    // dimension's is, by the anchored entity's ref and its
+                    // instance paths - and MFC writes a path instance IN FULL
+                    // there when nothing has pointed at it before (a label
+                    // anchored to a component instance serialized after it,
+                    // its class declaration included when it is the file's
+                    // first instance). Skipped as bytes, that instance never
+                    // gets its store-map slots and every later reference is
+                    // off by them; read it instead.
+                    self.r.skip(16 + 32)?;
+                    self.entity_ref(false)?;
+                    self.connection_paths()?;
+                }
                 let d = self.r.d;
                 let lim = d.len().min(self.r.p + 512);
                 let mut found = None;
@@ -1152,16 +1254,29 @@ impl<'a> Archive<'a> {
 
     pub fn entity_list(&mut self, n: u32, root: bool) -> Result<Vec<LegacyObject>> {
         self.burn_stack.push(0);
+        self.inline_stack.push(Vec::new());
         let res = self.entity_list_inner(n, root);
         self.burn_stack.pop();
+        self.inline_stack.pop();
         res
     }
 
     fn entity_list_inner(&mut self, n: u32, root: bool) -> Result<Vec<LegacyObject>> {
-        let mut v = Vec::new();
+        // indexed, not held by reference: nested lists grow the stack
+        let depth = self.inline_stack.len() - 1;
+        let mut v: Vec<LegacyObject> = Vec::new();
         while v.len() < n as usize {
             let save = self.r.p;
             let d = self.r.d;
+            let pending = &self.inline_stack[depth];
+            if !pending.is_empty() && v.len() + pending.len() >= n as usize {
+                // every item left is an instance an annotation already wrote
+                // in full and the list does not list again (see below)
+                match self.peek_backref() {
+                    Some(next_ref) if pending.contains(&next_ref) => {}
+                    _ => break,
+                }
+            }
             let has_burn_credit = !root && self.burn_stack.last().is_some_and(|&c| c > 0);
             if has_burn_credit
                 && save + 25 <= d.len()
@@ -1177,7 +1292,10 @@ impl<'a> Archive<'a> {
                 break;
             }
             match self.object(None) {
-                Ok(o) => v.push(o),
+                Ok(o) => {
+                    self.inline_stack[depth].retain(|&s| s != o.slot);
+                    v.push(o);
+                }
                 Err(e) => {
                     if root {
                         // over-declared root counts run into the document
@@ -1197,6 +1315,26 @@ impl<'a> Archive<'a> {
                     return Err(e);
                 }
             }
+        }
+        // An instance an annotation wrote in full is one of this list's items,
+        // and the declared count holds it - but SketchUp does not always list
+        // it again with a back-reference (labels anchored to the loudspeakers
+        // of an auditorium: of five instances written in a definition's
+        // labels, three were listed again, two not). Keep the ones never
+        // listed, as the list's own entities.
+        for &slot in &self.inline_stack[depth] {
+            if v.len() >= n as usize {
+                break;
+            }
+            let e = self
+                .slots
+                .get(&slot)
+                .ok_or_else(|| Error::runtime("legacy backref to unknown slot"))?;
+            v.push(LegacyObject {
+                slot,
+                name: e.name.clone(),
+                v: e.v.clone(),
+            });
         }
         Ok(v)
     }
@@ -1467,6 +1605,13 @@ fn walk_model_on(
                 dc = 0;
                 ar.r.p -= 4;
             }
+        } else if let Some(root_count_at) =
+            super::find_empty_root_after_v20_filler(data, ar.r.p - 4)
+        {
+            // No count behind the filler at all: an entirely empty model,
+            // whose root count is 0 (the retry only accepts counts > 0).
+            dc = 0;
+            ar.r.p = root_count_at;
         }
     }
     if dc > 1_000_000 {
